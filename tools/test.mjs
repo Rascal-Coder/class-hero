@@ -1,0 +1,27 @@
+import assert from 'node:assert/strict';
+import {loadCore} from './runtime.mjs';
+const {Inventory,offersFor}=loadCore('Inventory');
+const {Battle}=loadCore('Battle');
+let count=0;
+function test(name,fn){try{fn();console.log('PASS',name);count++;}catch(e){console.error('FAIL',name);throw e;}}
+const board=(x,y)=>({area:'board',x,y});
+test('Reference 0s: 651 / 85% / 3% / 150% / 0%',()=>{const s=new Inventory().stats();assert.deepEqual([s.damage,s.accuracy,s.crit,s.critDamage,s.bounce],[651,85,3,150,0]);});
+test('Reference 3s: stock snaps to the left socket and adds 5% accuracy',()=>{const i=new Inventory(),s=i.add('stock',{area:'stash',slot:0});assert.equal(i.move(s.id,board(0,2)).ok,true);assert.equal(i.stats().accuracy,90);});
+test('Reference 5s: independent grenade increases total damage to 839',()=>{const i=new Inventory();i.add('grenade',board(0,0));assert.equal(i.stats().damage,839);});
+test('Reference 21–26s: second barrel connects vertically; combined damage 1490',()=>{const i=new Inventory();i.add('grenade',board(0,0));const b=i.add('barrel',{area:'stash',slot:0});assert.equal(i.move(b.id,board(2,1)).ok,true);assert.equal(i.stats().damage,1490);});
+test('Reference 49s: scope adds five percentage points of critical chance',()=>{const i=new Inventory();const s=i.add('scope',{area:'stash',slot:0});assert.equal(i.move(s.id,board(2,1)).ok,true);assert.equal(i.stats().crit,8);});
+test('Reference 51s: level 2 stock replaces level 1, retains old part and changes accuracy to 94%',()=>{const i=new Inventory();const old=i.add('stock',board(0,2));const n=i.add('stock',{area:'stash',slot:3},2);assert.equal(i.move(n.id,board(0,2)).replaced,true);assert.deepEqual(old.place,{area:'stash',slot:3});assert.equal(i.stats().accuracy,94);});
+test('Auto-installing a stronger stock prioritizes replacing the weaker stock',()=>{const i=new Inventory();i.add('barrel',board(2,1));const old=i.add('stock',board(0,2));const newer=i.add('stock',{area:'stash',slot:0},2);assert.equal(i.autoPlace(newer).ok,true);assert.equal(old.place.area,'stash');assert.equal(i.stats().accuracy,94);});
+test('Dragging the grip translates the connected assembly, independent grenade stays fixed',()=>{const i=new Inventory();const grip=i.items[0],barrel=i.items[1],s=i.add('stock',board(0,2)),g=i.add('grenade',board(0,0));assert.equal(i.move(grip.id,board(3,2)).ok,true);assert.deepEqual(barrel.place,board(3,1));assert.deepEqual(s.place,board(1,1));assert.deepEqual(g.place,board(0,0));});
+test('Whole assembly out-of-bounds move rolls back atomically',()=>{const i=new Inventory();const before=JSON.stringify(i.serialize());assert.equal(i.move(1,board(5,3)).ok,false);assert.equal(JSON.stringify(i.serialize()),before);});
+test('Overlapping independent item rejects drop without mutating inventory',()=>{const i=new Inventory();const g=i.add('grenade',{area:'stash',slot:0});assert.equal(i.move(g.id,board(2,2)).ok,false);assert.deepEqual(g.place,{area:'stash',slot:0});});
+test('Disconnected attachment cannot be installed on an arbitrary empty cell',()=>{const i=new Inventory();const b=i.add('barrel',{area:'stash',slot:0});assert.equal(i.move(b.id,board(0,0)).ok,false);});
+test('Taking the grip out deactivates all connected barrels while grenade stays active',()=>{const i=new Inventory();i.add('grenade',board(0,0));assert.equal(i.move(1,{area:'stash',slot:0}).ok,true);assert.equal(i.stats().damage,188);});
+test('Stash collision and invalid slot are rejected',()=>{const i=new Inventory();i.add('scope',{area:'stash',slot:0});assert.equal(i.move(1,{area:'stash',slot:0}).ok,false);assert.equal(i.move(1,{area:'stash',slot:-1}).ok,false);});
+test('Save roundtrip preserves layout and rejects overlapping or malformed data',()=>{const i=new Inventory();i.add('grenade',board(0,0));assert.deepEqual(Inventory.restore(i.serialize()).serialize(),i.serialize());const data=JSON.parse(JSON.stringify(i.serialize()));data.items[2].place=board(2,2);assert.throws(()=>Inventory.restore(data));assert.throws(()=>Inventory.restore({items:[{id:1,kind:'bad'}]}));});
+test('Shop order and prices reproduce the visible video sequence',()=>{assert.deepEqual(offersFor(0,0).map(o=>o.price),[15,25,55]);assert.equal(offersFor(0,1)[1].kind,'barrel');assert.equal(offersFor(1,0)[0].level,2);assert.equal(offersFor(1,0)[1].kind,'scope');});
+test('First wave terminates, rewards kills and does not leak projectiles',()=>{const b=new Battle(1,new Inventory().stats());for(let k=0;k<24000&&b.state==='running';k++)b.step(1/60);assert.equal(b.state,'won');assert.equal(b.defeated,b.total);assert.equal(b.coins,b.total*3);assert.ok(b.hp>0);assert.ok(b.shots.length<12);});
+test('Enemy contact can defeat an unarmed player',()=>{const stats=new Inventory(false).stats();const b=new Battle(1,stats,50);for(let k=0;k<12000&&b.state==='running';k++)b.step(1/60);assert.equal(b.state,'lost');assert.equal(b.hp,0);});
+test('Equal inputs produce deterministic combat results',()=>{const a=new Battle(3,new Inventory().stats()),b=new Battle(3,new Inventory().stats());for(let k=0;k<2000;k++){a.step(1/60);b.step(1/60);}assert.deepEqual(a,b);});
+test('Five-wave checkpoints include the larger enemy',()=>{const b=new Battle(5,new Inventory(false).stats(),999999,999999);for(let k=0;k<3000;k++)b.step(1/60);assert.ok(b.enemies.some(e=>e.kind===3));});
+console.log(`\n${count} tests passed.`);

@@ -1,0 +1,19 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <meta name="theme-color" content="#244d43">
+  <meta name="description" content="下课别跑：把校园文具组合成武器，挑战放学后的十五波操场大作战。">
+  <title>下课别跑 · 放学大作战</title>
+  <link rel="stylesheet" href="<%= cssUrl %>">
+</head>
+<body>
+  <div id="GameDiv" cc_exact_fit_screen="false">
+    <div id="Cocos3dGameContainer">
+      <canvas id="GameCanvas" tabindex="0" aria-label="下课别跑游戏。空格开战或暂停，1至3购买，R刷新，Tab和回车操作按钮。" oncontextmenu="event.preventDefault()"></canvas>
+    </div>
+  </div>
+  <%- include(cocosTemplate, {}) %>
+</body>
+</html>

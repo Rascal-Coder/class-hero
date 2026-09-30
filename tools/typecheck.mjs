@@ -1,0 +1,10 @@
+import fs from 'node:fs';
+import path from 'node:path';
+import {typescript} from './runtime.mjs';
+const ts=typescript(), root=path.resolve(import.meta.dirname,'..');
+const file=path.join(root,'tsconfig.json');
+const read=ts.readConfigFile(file,ts.sys.readFile);
+const cfg=ts.parseJsonConfigFileContent(read.config,ts.sys,root,{noEmit:true,skipLibCheck:true},file);
+const program=ts.createProgram(cfg.fileNames,cfg.options);
+const diagnostics=[...cfg.errors,...ts.getPreEmitDiagnostics(program)];
+if(diagnostics.length){console.error(ts.formatDiagnosticsWithColorAndContext(diagnostics,{getCanonicalFileName:x=>x,getCurrentDirectory:()=>root,getNewLine:()=> '\n'}));process.exitCode=1;}else console.log(`TypeScript passed: ${cfg.fileNames.length} Cocos game scripts.`);

@@ -1,0 +1,11 @@
+{
+  "name": "class-gun-hero",
+  "uuid": "327b32ed-369d-4e29-b2c9-d92ef3723143",
+  "creator": { "version": "3.8.8" },
+  "scripts": {
+    "scene": "node tools/setup.mjs",
+    "test": "node tools/test.mjs",
+    "typecheck": "node tools/typecheck.mjs",
+    "preview": "node tools/serve.mjs"
+  }
+}

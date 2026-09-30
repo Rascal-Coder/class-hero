@@ -1,0 +1,27 @@
+{
+  "name": "下课别跑",
+  "platform": "web-desktop",
+  "buildPath": "project://build",
+  "outputName": "web-desktop",
+  "startScene": "f1e6a07d-c285-1c33-f802-cd1206b29f5d",
+  "scenes": [
+    {
+      "url": "db://assets/scenes/Classroom.scene",
+      "uuid": "f1e6a07d-c285-1c33-f802-cd1206b29f5d"
+    }
+  ],
+  "debug": false,
+  "sourceMaps": false,
+  "md5Cache": false,
+  "polyfills": {
+    "asyncFunctions": true
+  },
+  "splashScreen": {
+    "totalTime": 0
+  },
+  "packages": {
+    "web-desktop": {
+      "embedWebDebugger": false
+    }
+  }
+}
