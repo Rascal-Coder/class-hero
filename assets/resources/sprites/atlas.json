@@ -1,0 +1,380 @@
+{
+  "version": 1,
+  "columns": "1–5 stars, left to right",
+  "sheets": {
+    "weapons": {
+      "width": 1254,
+      "height": 1254,
+      "columns": 5,
+      "rows": 5
+    },
+    "items": {
+      "width": 1536,
+      "height": 1024,
+      "columns": 5,
+      "rows": 3
+    }
+  },
+  "frames": {
+    "barrel-1": {
+      "sheet": "weapons",
+      "rect": [
+        13,
+        138,
+        237,
+        65
+      ]
+    },
+    "barrel-2": {
+      "sheet": "weapons",
+      "rect": [
+        271,
+        124,
+        240,
+        84
+      ]
+    },
+    "barrel-3": {
+      "sheet": "weapons",
+      "rect": [
+        525,
+        116,
+        219,
+        95
+      ]
+    },
+    "barrel-4": {
+      "sheet": "weapons",
+      "rect": [
+        756,
+        121,
+        241,
+        93
+      ]
+    },
+    "barrel-5": {
+      "sheet": "weapons",
+      "rect": [
+        1015,
+        113,
+        231,
+        101
+      ]
+    },
+    "scope-1": {
+      "sheet": "weapons",
+      "rect": [
+        60,
+        295,
+        158,
+        186
+      ]
+    },
+    "scope-2": {
+      "sheet": "weapons",
+      "rect": [
+        306,
+        282,
+        157,
+        200
+      ]
+    },
+    "scope-3": {
+      "sheet": "weapons",
+      "rect": [
+        543,
+        272,
+        170,
+        211
+      ]
+    },
+    "scope-4": {
+      "sheet": "weapons",
+      "rect": [
+        774,
+        282,
+        194,
+        201
+      ]
+    },
+    "scope-5": {
+      "sheet": "weapons",
+      "rect": [
+        1030,
+        269,
+        180,
+        214
+      ]
+    },
+    "magazine-1": {
+      "sheet": "weapons",
+      "rect": [
+        60,
+        553,
+        137,
+        203
+      ]
+    },
+    "magazine-2": {
+      "sheet": "weapons",
+      "rect": [
+        306,
+        535,
+        148,
+        221
+      ]
+    },
+    "magazine-3": {
+      "sheet": "weapons",
+      "rect": [
+        549,
+        532,
+        155,
+        227
+      ]
+    },
+    "magazine-4": {
+      "sheet": "weapons",
+      "rect": [
+        795,
+        520,
+        174,
+        242
+      ]
+    },
+    "magazine-5": {
+      "sheet": "weapons",
+      "rect": [
+        1054,
+        506,
+        166,
+        256
+      ]
+    },
+    "stock-1": {
+      "sheet": "weapons",
+      "rect": [
+        10,
+        818,
+        240,
+        105
+      ]
+    },
+    "stock-2": {
+      "sheet": "weapons",
+      "rect": [
+        269,
+        820,
+        238,
+        103
+      ]
+    },
+    "stock-3": {
+      "sheet": "weapons",
+      "rect": [
+        519,
+        820,
+        239,
+        102
+      ]
+    },
+    "stock-4": {
+      "sheet": "weapons",
+      "rect": [
+        768,
+        819,
+        235,
+        110
+      ]
+    },
+    "stock-5": {
+      "sheet": "weapons",
+      "rect": [
+        1014,
+        809,
+        234,
+        127
+      ]
+    },
+    "grip-1": {
+      "sheet": "weapons",
+      "rect": [
+        40,
+        980,
+        150,
+        216
+      ]
+    },
+    "grip-2": {
+      "sheet": "weapons",
+      "rect": [
+        291,
+        980,
+        151,
+        215
+      ]
+    },
+    "grip-3": {
+      "sheet": "weapons",
+      "rect": [
+        534,
+        981,
+        157,
+        216
+      ]
+    },
+    "grip-4": {
+      "sheet": "weapons",
+      "rect": [
+        783,
+        980,
+        197,
+        217
+      ]
+    },
+    "grip-5": {
+      "sheet": "weapons",
+      "rect": [
+        1038,
+        977,
+        195,
+        222
+      ]
+    },
+    "grenade-1": {
+      "sheet": "items",
+      "rect": [
+        33,
+        36,
+        237,
+        280
+      ]
+    },
+    "grenade-2": {
+      "sheet": "items",
+      "rect": [
+        333,
+        46,
+        242,
+        281
+      ]
+    },
+    "grenade-3": {
+      "sheet": "items",
+      "rect": [
+        636,
+        38,
+        265,
+        285
+      ]
+    },
+    "grenade-4": {
+      "sheet": "items",
+      "rect": [
+        952,
+        28,
+        265,
+        299
+      ]
+    },
+    "grenade-5": {
+      "sheet": "items",
+      "rect": [
+        1257,
+        30,
+        254,
+        294
+      ]
+    },
+    "underbarrel-1": {
+      "sheet": "items",
+      "rect": [
+        80,
+        357,
+        155,
+        300
+      ]
+    },
+    "underbarrel-2": {
+      "sheet": "items",
+      "rect": [
+        387,
+        358,
+        155,
+        299
+      ]
+    },
+    "underbarrel-3": {
+      "sheet": "items",
+      "rect": [
+        688,
+        356,
+        169,
+        302
+      ]
+    },
+    "underbarrel-4": {
+      "sheet": "items",
+      "rect": [
+        990,
+        356,
+        172,
+        301
+      ]
+    },
+    "underbarrel-5": {
+      "sheet": "items",
+      "rect": [
+        1306,
+        354,
+        169,
+        304
+      ]
+    },
+    "medkit-1": {
+      "sheet": "items",
+      "rect": [
+        69,
+        685,
+        173,
+        298
+      ]
+    },
+    "medkit-2": {
+      "sheet": "items",
+      "rect": [
+        369,
+        679,
+        192,
+        306
+      ]
+    },
+    "medkit-3": {
+      "sheet": "items",
+      "rect": [
+        669,
+        677,
+        204,
+        308
+      ]
+    },
+    "medkit-4": {
+      "sheet": "items",
+      "rect": [
+        972,
+        680,
+        218,
+        307
+      ]
+    },
+    "medkit-5": {
+      "sheet": "items",
+      "rect": [
+        1278,
+        677,
+        212,
+        309
+      ]
+    }
+  }
+}

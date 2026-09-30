@@ -1,16 +1,40 @@
-import { Color, Graphics, Label, Node, UITransform, Layers } from 'cc';
-import { Kind } from './core/Inventory';
-export const C = { ink: '#293b35', muted: '#76847a', paper: '#f4efdf', white: '#fffaf0', chalk: '#244d43', mint: '#b4d9b5', orange: '#e99761', line: '#d4d7bd', blue: '#8bafc1', red: '#d77666' };
+import { Color, Graphics, Label, Node, UITransform, Layers, Sprite, SpriteFrame } from 'cc';
+import { Inventory, Item, Kind } from './core/Inventory';
+import { ItemSprites, TapeKind } from './ItemSprites';
+export const C = { ink: '#293b35', muted: '#76847a', paper: '#f4efdf', white: '#fffaf0', chalk: '#244d43', mint: '#b4d9b5', orange: '#e99761', line: '#d4d7bd', blue: '#8bafc1', red: '#d77666', valid: '#a9efac', invalid: '#efa99e', target: '#ffe45e', slot: '#bdd7d8' };
 export class Painter {
   node: Node; g: Graphics; labels = new Map<string, Label>(); used = new Set<string>();
+  private marks: Graphics; private sprites: Sprite[] = []; private spriteCount = 0;
   constructor(parent: Node, name: string) {
     this.node = new Node(name); this.node.layer = Layers.Enum.UI_2D; parent.addChild(this.node);
     this.node.addComponent(UITransform).setContentSize(480, 960);
     this.node.setPosition(-240, 480);
     this.g = this.node.addComponent(Graphics);
+    const marks = new Node('Highlights'); marks.layer = Layers.Enum.UI_2D; this.node.addChild(marks);
+    marks.addComponent(UITransform); this.marks = marks.addComponent(Graphics);
   }
-  begin() { this.g.clear(); this.used.clear(); }
-  end() { this.labels.forEach((label, key) => { label.node.active = this.used.has(key); }); }
+  begin() { this.g.clear(); this.marks.clear(); this.used.clear(); this.spriteCount = 0; }
+  end() {
+    this.labels.forEach((label, key) => { label.node.active = this.used.has(key); });
+    this.sprites.forEach((sprite, index) => { sprite.node.active = index < this.spriteCount; });
+  }
+  sprite(frame: SpriteFrame, x: number, y: number, w: number, h: number, angle = 0, front = false, alpha = 255) {
+    let sprite = this.sprites[this.spriteCount++];
+    if (!sprite) {
+      const node = new Node(`item-sprite-${this.sprites.length}`); node.layer = Layers.Enum.UI_2D;
+      this.node.addChild(node);
+      node.addComponent(UITransform); sprite = node.addComponent(Sprite);
+      sprite.sizeMode = Sprite.SizeMode.CUSTOM; this.sprites.push(sprite);
+    }
+    sprite.node.active = true; sprite.spriteFrame = frame; sprite.color = new Color(255, 255, 255, alpha);
+    sprite.node.getComponent(UITransform)!.setContentSize(w, h);
+    sprite.node.setPosition(x + w / 2, -y - h / 2); sprite.node.angle = angle;
+    sprite.node.setSiblingIndex(front ? this.marks.node.getSiblingIndex() : 0);
+  }
+  /** Price marks and stars paint above item sprites. */
+  over(draw: () => void) {
+    const graphics = this.g; this.g = this.marks; draw(); this.g = graphics;
+  }
   color(hex: string) { return new Color().fromHEX(hex); }
   style(fill: string, stroke = C.ink, line = 2) { this.g.fillColor = this.color(fill); this.g.strokeColor = this.color(stroke); this.g.lineWidth = line; }
   box(x: number, y: number, w: number, h: number, fill: string, radius = 8, stroke = C.ink, line = 2) {
@@ -25,6 +49,22 @@ export class Painter {
   }
   line(points: number[][], color = C.ink, width = 2) {
     this.g.strokeColor = this.color(color); this.g.lineWidth = width; this.g.moveTo(points[0][0], -points[0][1]); for (const [x, y] of points.slice(1)) this.g.lineTo(x, -y); this.g.stroke();
+  }
+  corners(x: number, y: number, w: number, h: number, color = C.target, width = 4) {
+    const graphics = this.g; this.g = this.marks;
+    const size = Math.min(13, w / 4, h / 4);
+    for (const [cx, cy, sx, sy] of [[x, y, 1, 1], [x + w, y, -1, 1], [x, y + h, 1, -1], [x + w, y + h, -1, -1]]) {
+      const points = [[cx, cy + sy * size], [cx, cy], [cx + sx * size, cy]];
+      this.line(points, C.ink, width + 3); this.line(points, color, width);
+    }
+    this.g = graphics;
+  }
+  star(x: number, y: number, radius: number, color = C.target) {
+    const points = Array.from({ length: 10 }, (_, i) => {
+      const angle = -Math.PI / 2 + i * Math.PI / 5, r = i % 2 ? radius * 0.46 : radius;
+      return [x + Math.cos(angle) * r, y + Math.sin(angle) * r];
+    });
+    const graphics = this.g; this.g = this.marks; this.path(points, color, C.ink, 1); this.g = graphics;
   }
   text(key: string, value: string | number, x: number, y: number, size = 18, color = C.ink, align: 'left' | 'center' | 'right' = 'center', width = 460, bold = false) {
     this.used.add(key); let label = this.labels.get(key);
@@ -45,6 +85,20 @@ export class Painter {
 
 export function itemArt(p: Painter, kind: Kind, x: number, y: number, cell: number, level = 1) {
   const s = cell / 56, X = (n: number) => x + n * s, Y = (n: number) => y + n * s;
+  const frame = ItemSprites.frame(kind, level);
+  if (frame) {
+    // Side-view bounds preserve the existing board sockets and occupied cells.
+    const bounds: Record<Kind, number[]> = {
+      barrel: [1, 7, 166, 38], stock: [4, 7, 106, 42], grip: [5, -9, 48, 57],
+      scope: [4, 1, 48, 54], magazine: [5, 1, 46, 48],
+      grenade: [5, 1, 46, 48], underbarrel: [6, 0, 44, 50], medkit: [7, 1, 42, 49],
+    };
+    const [bx, by, bw, bh] = bounds[kind];
+    const scale = Math.min(bw / frame.rect.width, bh / frame.rect.height);
+    const w = frame.rect.width * scale, h = frame.rect.height * scale;
+    p.sprite(frame, X(bx + (bw - w) / 2), Y(by + (bh - h) / 2), w * s, h * s);
+    return;
+  }
   const box = (a: number, b: number, w: number, h: number, c: string, r = 4) => p.box(X(a), Y(b), w * s, h * s, c, r * s, C.ink, 2.5 * s);
   const line = (pts: number[][], c = C.ink, w = 2) => p.line(pts.map(([a, b]) => [X(a), Y(b)]), c, w * s);
   if (kind === 'barrel') {
@@ -74,6 +128,12 @@ export function itemArt(p: Painter, kind: Kind, x: number, y: number, cell: numb
     p.path([[X(10), Y(16)], [X(22), Y(7)], [X(40), Y(9)], [X(49), Y(24)], [X(43), Y(46)], [X(23), Y(50)], [X(8), Y(37)]], '#f9f4de', C.ink, 2.5 * s);
     line([[10, 16], [28, 25], [40, 9]], '#b4b69d'); line([[28, 25], [23, 43], [43, 46]], '#b4b69d');
     line([[21, 8], [23, 0], [32, 0]], C.ink, 3);
+  } else if (kind === 'underbarrel') {
+    box(17, 0, 24, 14, '#506857', 2);
+    box(12, 12, 34, 38, level > 1 ? '#cfb56d' : '#92ae84', 10);
+    line([[14, 25], [44, 25]], '#536a4b', 3); line([[14, 36], [44, 36]], '#536a4b', 3);
+    line([[27, 15], [27, 47]], '#d8e2b8', 2);
+    p.ellipse(X(44), Y(10), 6 * s, 6 * s, '#ffffff00', C.ink, 2 * s);
   } else if (kind === 'magazine') {
     p.path([[X(13), Y(4)], [X(48), Y(12)], [X(39), Y(50)], [X(4), Y(42)]], '#7da2b5', C.ink, 2.5 * s);
     for (let i = 0; i < 3; i++) line([[16 - i * 2, 14 + i * 10], [36 - i * 2, 19 + i * 10]], '#d4e3e4', 4);
@@ -81,6 +141,53 @@ export function itemArt(p: Painter, kind: Kind, x: number, y: number, cell: numb
     box(11, 12, 34, 39, '#d8e7cc');
     p.path([[X(11), Y(12)], [X(19), Y(2)], [X(36), Y(2)], [X(45), Y(12)]], '#85b096', C.ink, 2.5 * s);
     line([[28, 21], [28, 41]], '#638c71', 5); line([[19, 31], [37, 31]], '#638c71', 5);
+  }
+}
+
+/** Shop cards use the same tier artwork, tilted and fitted inside the icon area. */
+export function shopItemArt(p: Painter, kind: Kind, level: number, x: number, y: number, w: number, h: number) {
+  const frame = ItemSprites.frame(kind, level);
+  if (!frame) {
+    const cells = kind === 'barrel' ? 3 : kind === 'stock' ? 2 : 1, cell = Math.min(h, w / cells);
+    itemArt(p, kind, x + (w - cell * cells) / 2, y + (h - cell) / 2, cell, level); return;
+  }
+  const angle = 32, radians = angle * Math.PI / 180;
+  const rw = frame.rect.width, rh = frame.rect.height;
+  const scale = Math.min(w / (rw * Math.cos(radians) + rh * Math.sin(radians)), h / (rw * Math.sin(radians) + rh * Math.cos(radians)));
+  const width = rw * scale, height = rh * scale;
+  p.sprite(frame, x + (w - width) / 2, y + (h - height) / 2, width, height, angle);
+}
+
+/** Paper-tape overlays pressed across each socket. Sizes stay strap-like, not stretched slabs. */
+const TAPE_BOX: Record<TapeKind, number[]> = { h: [74, 18], v: [18, 46], x: [38, 30], l: [40, 42], double: [50, 44], wrap: [34, 32] };
+const TAPE_JOINT: Partial<Record<Kind, [TapeKind, number, number, number, number]>> = {
+  grip: ['wrap', 26, 32, 26, 8], stock: ['h', 8, 26, 104, 24], scope: ['x', 28, 18, 28, 49],
+  magazine: ['l', 82, 32, 28, 16], underbarrel: ['v', 140, 32, 28, 16],
+};
+export function assemblyArt(p: Painter, inventory: Inventory, items: Item[], x: number, y: number, cell: number) {
+  const scale = cell / 56;
+  const point = (item: Item, dx: number, dy: number) => item.place.area === 'board'
+    ? [x + item.place.x * cell + dx * scale, y + item.place.y * cell + dy * scale] : [x, y];
+  const joints: { kind: TapeKind; x: number; y: number; fallback: number[][] }[] = [];
+  for (const barrel of items.filter(i => i.kind === 'barrel')) for (const part of items) {
+    if (barrel.id === part.id || !inventory.linked(barrel, part)) continue;
+    if (part.kind === 'barrel') {
+      if (barrel.place.area === 'board' && part.place.area === 'board' && barrel.place.y < part.place.y) {
+        const topL = point(barrel, 26, 32), botL = point(part, 26, 20), topR = point(barrel, 128, 32);
+        joints.push({ kind: 'double', x: (topL[0] + topR[0]) / 2, y: (topL[1] + botL[1]) / 2, fallback: [topL, botL] });
+      }
+    } else {
+      const socket = TAPE_JOINT[part.kind];
+      if (!socket) continue;
+      const [kind, ax, ay, bx, by] = socket, a = point(barrel, ax, ay), b = point(part, bx, by);
+      joints.push({ kind, x: (a[0] + b[0]) / 2, y: (a[1] + b[1]) / 2, fallback: [a, b] });
+    }
+  }
+  for (const item of items) if (item.place.area === 'board') itemArt(p, item.kind, x + item.place.x * cell, y + item.place.y * cell, cell, item.level);
+  for (const joint of joints) {
+    const frame = ItemSprites.tape(joint.kind), [bw, bh] = TAPE_BOX[joint.kind], w = bw * scale, h = bh * scale;
+    if (!frame) { p.line(joint.fallback, C.ink, 9 * scale); p.line(joint.fallback, '#cbb98a', 5 * scale); continue; }
+    p.sprite(frame, joint.x - w / 2, joint.y - h / 2, w, h, 0, true, 220);
   }
 }
 

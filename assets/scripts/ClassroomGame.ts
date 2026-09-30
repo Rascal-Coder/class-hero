@@ -1,11 +1,14 @@
 import { _decorator, Component, input, Input, EventMouse, EventTouch, EventKeyboard, KeyCode, UITransform, Vec3, view, ResolutionPolicy, sys, AudioSource, AudioClip, resources, game, Game } from 'cc';
-import { C, Painter, itemArt, student } from './Painter';
-import { DEFS, Inventory, Item, Kind, Offer, Place, offersFor } from './core/Inventory';
+import { C, Painter, assemblyArt, itemArt, shopItemArt, student } from './Painter';
+import { ItemSprites } from './ItemSprites';
+import { COLS, ROWS, DEFS, Inventory, Item, Place, offersFor } from './core/Inventory';
 import { Battle } from './core/Battle';
 const { ccclass } = _decorator;
 type Phase = 'prepare' | 'battle' | 'reward' | 'victory' | 'defeat';
 interface Button { x: number; y: number; w: number; h: number; action: () => void; label: string; enabled: boolean }
 interface Drag { id: number; source: Place; shop: number; startX: number; startY: number; x: number; y: number; offX: number; offY: number; active: boolean }
+interface Returning { parts: Item[]; x: number; y: number; toX: number; toY: number; cell: number; fromCell: number; start: number; hidden: number[] }
+interface PlacementEffect { place: Place; item: Item; merged: boolean; start: number }
 const SAVE = 'class-gun-hero-v1';
 
 @ccclass('ClassroomGame')
@@ -15,10 +18,13 @@ export class ClassroomGame extends Component {
   phase: Phase = 'prepare'; battle: Battle | null = null; speed = 1;
   back!: Painter; actors!: Painter; overlay!: Painter; floating!: Painter;
   buttons: Button[] = []; drag: Drag | null = null; selected: Item | null = null;
+  returning: Returning | null = null;
+  placementEffect: PlacementEffect | null = null;
   modal: 'help' | 'pause' | 'item' | 'restart' | null = null;
   focus = -1; clock = 0; toast = ''; toastUntil = 0; feedback = ''; sound = true;
   lastDown = -1; lastDownX = 0; lastDownY = 0;
   soundSource!: AudioSource; clips = new Map<string, AudioClip>(); lastShots = 0;
+  spritesReady = false;
   board = { x: 72, y: 365, cell: 56 }; lastUiRevision = -1;
   onLoad() {
     view.setDesignResolutionSize(480, 960, ResolutionPolicy.SHOW_ALL);
@@ -28,6 +34,9 @@ export class ClassroomGame extends Component {
     this.soundSource = this.node.addComponent(AudioSource);
     for (const name of ['click', 'snap', 'pop', 'win']) resources.load(`audio/${name}`, AudioClip, (err, clip) => { if (!err) this.clips.set(name, clip); });
     this.restore();
+    ItemSprites.load().then(() => {
+      if (this.isValid) { this.spritesReady = true; this.render(); }
+    }).catch(error => console.warn('文具图集加载失败，保留基础绘制。', error));
     input.on(Input.EventType.MOUSE_DOWN, this.mouseDown, this); input.on(Input.EventType.MOUSE_MOVE, this.mouseMove, this); input.on(Input.EventType.MOUSE_UP, this.mouseUp, this);
     input.on(Input.EventType.TOUCH_START, this.touchDown, this); input.on(Input.EventType.TOUCH_MOVE, this.touchMove, this); input.on(Input.EventType.TOUCH_END, this.touchUp, this); input.on(Input.EventType.TOUCH_CANCEL, this.cancelDrag, this);
     input.on(Input.EventType.KEY_DOWN, this.keyDown, this); game.on(Game.EVENT_HIDE, this.onHide, this);
@@ -52,10 +61,9 @@ export class ClassroomGame extends Component {
       this.hp = data.hp; this.maxHp = data.maxHp; this.damageBonus = data.damageBonus; this.sound = data.sound !== false;
       this.offers = offersFor(this.wave, this.refreshes);
       if (Array.isArray(data.offers) && data.offers.length === 3) this.offers.forEach((offer, i) => { if (data.offers[i].kind === offer.kind) offer.sold = !!data.offers[i].sold; });
-      this.say('已接着上次的书包继续');
     } catch { this.inventory = new Inventory(); }
   }
-  newRun() { this.inventory = new Inventory(); this.coins = 70; this.wave = this.refreshes = 0; this.hp = this.maxHp = 1298; this.damageBonus = 1; this.offers = offersFor(0, 0); this.phase = 'prepare'; this.battle = null; this.modal = null; this.selected = null; this.save(); this.render(); }
+  newRun() { this.inventory = new Inventory(); this.coins = 70; this.wave = this.refreshes = 0; this.hp = this.maxHp = 1298; this.damageBonus = 1; this.offers = offersFor(0, 0); this.phase = 'prepare'; this.battle = null; this.modal = null; this.selected = null; this.placementEffect = null; this.returning = null; this.toast = ''; this.save(); this.render(); }
   point(event: EventMouse | EventTouch) {
     const p = event.getUILocation(); const v = this.node.getComponent(UITransform)!.convertToNodeSpaceAR(new Vec3(p.x, p.y, 0));
     return { x: v.x + 240, y: 480 - v.y };
@@ -67,13 +75,38 @@ export class ClassroomGame extends Component {
   touchMove(e: EventTouch) { this.move(this.point(e)); }
   touchUp(e: EventTouch) { this.up(this.point(e)); }
   contains(b: { x: number; y: number; w: number; h: number }, x: number, y: number) { return x >= b.x && y >= b.y && x <= b.x + b.w && y <= b.y + b.h; }
+  stashRect(slot: number) { return { x: 57 + (slot % 5) * 76, y: 653 + Math.floor(slot / 5) * 72, w: 62, h: 62 }; }
+  stashCell(item: Item) { return Math.min(42, 48 / DEFS[item.kind].w); }
   itemRect(item: Item) {
     const d = DEFS[item.kind];
     if (item.place.area === 'board') return { x: this.board.x + item.place.x * this.board.cell, y: this.board.y + item.place.y * this.board.cell, w: d.w * this.board.cell, h: d.h * this.board.cell };
-    return { x: 53 + (item.place.slot % 5) * 76, y: 690 + Math.floor(item.place.slot / 5) * 46, w: 68, h: 39 };
+    return this.stashRect(item.place.slot);
+  }
+  dragVisual() {
+    const drag = this.drag!, item = this.inventory.get(drag.id)!, target = this.dragTarget();
+    const result = target ? this.inventory.validate(item, target) : null;
+    const cell = target?.area === 'stash' ? this.stashCell(item) : 56;
+    if (target?.area === 'stash' && result?.ok) {
+      const r = this.stashRect(target.slot);
+      return { x: r.x + (r.w - DEFS[item.kind].w * cell) / 2, y: r.y + (r.h - cell) / 2 - 3, cell, target, result };
+    }
+    if (target?.area === 'board' && result?.ok) return { x: this.board.x + target.x * 56, y: this.board.y + target.y * 56, cell, target, result };
+    return { x: drag.x - drag.offX * cell, y: drag.y - drag.offY * cell - 3, cell, target, result };
+  }
+  placementPulse(item: Item | undefined, merged = false) {
+    if (item) this.placementEffect = { place: { ...item.place }, item: { ...item }, merged, start: this.clock };
+  }
+  autoInstall(item: Item) {
+    const mergeTarget = this.inventory.items.find(i => i.id !== item.id && i.kind === item.kind && this.inventory.validate(item, i.place).merged);
+    const result = this.inventory.autoPlace(item);
+    if (result.ok) this.placementPulse(result.merged ? mergeTarget : item, result.merged);
+    return result;
+  }
+  levelStars(p: Painter, item: Item, x: number, y: number, size = 4) {
+    for (let i = 0; i < item.level; i++) p.star(x + (i - (item.level - 1) / 2) * (size * 2 + 1), y, size);
   }
   down({ x, y }: { x: number; y: number }) {
-    if (this.drag) return;
+    if (this.drag || this.returning) return;
     // Creator synthesizes a touch from desktop mouse input. Treat the pair as one press.
     if (this.clock - this.lastDown < 0.12 && Math.hypot(x - this.lastDownX, y - this.lastDownY) < 2) return;
     this.lastDown = this.clock; this.lastDownX = x; this.lastDownY = y;
@@ -88,8 +121,7 @@ export class ClassroomGame extends Component {
       return;
     }
     for (let index = 0; index < 3; index++) if (this.contains({ x: 52 + index * 128, y: 797, w: 120, h: 86 }, x, y)) {
-      const offer = this.offers[index]; if (offer.sold) { this.say('本轮已买走，刷新后会有新文具'); return; }
-      if (this.coins < offer.price) { this.say(`零花钱不足，还差 ${offer.price - this.coins}`); this.selected = { id: -1, kind: offer.kind, level: offer.level, place: { area: 'stash', slot: -1 } }; this.modal = 'item'; this.render(); return; }
+      const offer = this.offers[index]; if (offer.sold) return;
       const draft = this.inventory.add(offer.kind, { area: 'stash', slot: -1 }, offer.level);
       this.drag = { id: draft.id, source: { ...draft.place }, shop: index, startX: x, startY: y, x, y, offX: DEFS[draft.kind].w / 2, offY: 0.5, active: false };
       return;
@@ -98,37 +130,63 @@ export class ClassroomGame extends Component {
   move({ x, y }: { x: number; y: number }) {
     if (!this.drag) return;
     this.drag.x = x; this.drag.y = y;
-    if (!this.drag.active && Math.hypot(x - this.drag.startX, y - this.drag.startY) > 7) { this.drag.active = true; this.render(); }
+    if (!this.drag.active && Math.hypot(x - this.drag.startX, y - this.drag.startY) > 7) { this.drag.active = true; this.placementEffect = null; this.toast = ''; }
     if (this.drag.active) this.render();
   }
   dragTarget(): Place | null {
     const d = this.drag; if (!d) return null;
-    if (d.y >= 679 && d.y < 781 && d.x >= 49 && d.x < 431) return { area: 'stash', slot: Math.min(9, Math.floor((d.y - 687) / 46) * 5 + Math.floor((d.x - 49) / 76)) };
-    if (d.y < 670 && d.y > 330) return { area: 'board', x: Math.round((d.x - this.board.x) / this.board.cell - d.offX), y: Math.round((d.y - this.board.y) / this.board.cell - d.offY) };
+    for (let slot = 0; slot < 10; slot++) if (this.contains(this.stashRect(slot), d.x, d.y)) return { area: 'stash', slot };
+    if (d.y < this.board.y + ROWS * this.board.cell + 12 && d.y > this.board.y - 25) return { area: 'board', x: Math.round((d.x - this.board.x) / this.board.cell - d.offX), y: Math.round((d.y - this.board.y) / this.board.cell - d.offY) };
     return null;
   }
   removeDraft() { if (this.drag && this.drag.shop >= 0) this.inventory.items = this.inventory.items.filter(i => i.id !== this.drag!.id); }
+  returnDrag(item: Item, drag: Drag) {
+    const rect = this.itemRect(item), def = DEFS[item.kind];
+    const cell = drag.shop >= 0 ? Math.min(36, 92 / def.w) : item.place.area === 'stash' ? this.stashCell(item) : 56;
+    const parts = this.inventory.movingIds(item).map(id => this.inventory.get(id)!).map(part => ({ ...part, place: { area: 'board' as const,
+      x: part.place.area === 'board' && item.place.area === 'board' ? part.place.x - item.place.x : 0,
+      y: part.place.area === 'board' && item.place.area === 'board' ? part.place.y - item.place.y : 0 } }));
+    const visual = this.dragVisual();
+    this.returning = { parts, x: visual.x, y: visual.y, fromCell: visual.cell,
+      toX: drag.shop >= 0 ? 52 + drag.shop * 128 + (120 - cell * def.w) / 2 : rect.x + (rect.w - cell * def.w) / 2,
+      toY: drag.shop >= 0 ? 807 : rect.y + (rect.h - cell) / 2 - (item.place.area === 'stash' ? 3 : 0), cell, start: this.clock, hidden: drag.shop < 0 ? parts.map(i => i.id) : [] };
+  }
   up(p: { x: number; y: number }) {
     const d = this.drag; if (!d) return;
     const item = this.inventory.get(d.id)!;
-    if (!d.active) { this.removeDraft(); this.selected = { ...item }; this.modal = 'item'; this.drag = null; this.render(); return; }
+    if (!d.active) {
+      this.removeDraft(); this.drag = null;
+      if (d.shop >= 0 && this.coins < this.offers[d.shop].price) this.say('资金不足');
+      else { this.selected = { ...item }; this.modal = 'item'; }
+      this.render(); return;
+    }
     d.x = p.x; d.y = p.y; const target = this.dragTarget();
-    const result = target ? this.inventory.move(d.id, target) : { ok: false, reason: '已放回原位' };
+    if (d.shop >= 0 && this.coins < this.offers[d.shop].price) {
+      this.returnDrag(item, d); this.removeDraft(); this.drag = null; this.say('资金不足'); this.render(); return;
+    }
+    const result = target ? this.inventory.move(d.id, target) : { ok: false, reason: '' };
     if (result.ok) {
       if (d.shop >= 0) { this.coins -= this.offers[d.shop].price; this.offers[d.shop].sold = true; }
-      this.say(result.replaced ? '新枪托装好了，旧件已放入暂存区' : target!.area === 'stash' ? '暂存物品不会参与战斗' : '咔哒！安装完成');
+      this.placementPulse(result.merged ? this.inventory.at(target!, item.id) : item, result.merged);
       this.play('snap'); this.save();
-    } else { this.removeDraft(); this.say(result.reason); }
+    } else { this.returnDrag(item, d); this.removeDraft(); }
     this.drag = null; this.render();
   }
   cancelDrag() { this.removeDraft(); this.drag = null; if (this.back) this.render(); }
   buy(index: number) {
     const offer = this.offers[index]; if (offer.sold) return;
-    if (this.coins < offer.price) { this.say('零花钱不够，先去操场打一波'); return; }
-    const slot = this.inventory.freeSlot(); if (slot === -1) { this.say('暂存区已满，请先整理书包'); return; }
-    const item = this.inventory.add(offer.kind, { area: 'stash', slot }, offer.level);
-    this.coins -= offer.price; offer.sold = true; this.inventory.autoPlace(item);
-    this.modal = null; this.say(item.place.area === 'board' ? '文具已安装，属性立即生效' : '已放入暂存区，拖到绿色接口安装'); this.play('snap'); this.save(); this.render();
+    if (this.coins < offer.price) { this.modal = null; this.say('资金不足'); this.render(); return; }
+    const item = this.inventory.add(offer.kind, { area: 'stash', slot: -1 }, offer.level);
+    const result = this.autoInstall(item);
+    if (!result.ok) {
+      const slot = this.inventory.freeSlot();
+      if (slot === -1) { this.inventory.items = this.inventory.items.filter(i => i.id !== item.id); this.say('暂存区已满，请先整理书包'); return; }
+      item.place = { area: 'stash', slot };
+      this.placementPulse(item);
+    }
+    this.coins -= offer.price; offer.sold = true;
+    this.modal = null;
+    this.play('snap'); this.save(); this.render();
   }
   refreshShop() {
     const cost = this.wave === 0 && this.refreshes === 0 ? 0 : 10;
@@ -148,7 +206,7 @@ export class ClassroomGame extends Component {
     if (this.wave >= 15) { this.phase = 'victory'; sys.localStorage.removeItem(SAVE); }
     else if (this.wave % 2 === 0) this.phase = 'reward';
     else this.nextPreparation();
-    this.say(`第 ${this.wave} 波完成 · 零花钱 +${earned}`); this.render();
+    this.render();
   }
   nextPreparation() { this.phase = 'prepare'; this.refreshes = 0; this.offers = offersFor(this.wave, 0); this.save(); this.render(); }
   reward(kind: number) {
@@ -159,6 +217,7 @@ export class ClassroomGame extends Component {
   }
   keyDown(e: EventKeyboard) {
     if (e.keyCode === KeyCode.ESCAPE) { if (this.drag) this.cancelDrag(); else { this.modal = this.modal ? null : 'pause'; this.render(); } return; }
+    if (this.drag || this.returning) return;
     if (e.keyCode === KeyCode.TAB) { const enabled = this.buttons.filter(b => b.enabled); this.focus = (this.focus + 1) % Math.max(1, enabled.length); this.drawFloating(); return; }
     if (e.keyCode === KeyCode.ENTER && this.focus >= 0) { this.buttons.filter(b => b.enabled)[this.focus]?.action(); this.focus = -1; return; }
     if (this.modal) return;
@@ -175,7 +234,7 @@ export class ClassroomGame extends Component {
   }
   render() {
     this.buttons = []; const p = this.back; p.begin();
-    const prep = this.phase === 'prepare'; this.board = prep ? { x: 72, y: 365, cell: 56 } : { x: 72, y: 572, cell: 56 };
+    const prep = this.phase === 'prepare'; this.board = prep ? { x: 72, y: 345, cell: 56 } : { x: 72, y: 572, cell: 56 };
     p.box(0, 0, 480, 960, C.paper, 0, C.paper, 0);
     for (let y = 115; y < 960; y += 24) p.line([[16, y], [464, y]], '#e6e5d1', 1);
     p.line([[32, 110], [32, 952]], '#e4baa5', 1);
@@ -188,11 +247,11 @@ export class ClassroomGame extends Component {
     p.ellipse(316, 42, 9, 9, '#e8bf6c', '#e8bf6c', 0); p.text('coins', this.coins, 346, 42, 18, '#f7df94', 'center', 56, true);
     this.button(p, 'pause', 'Ⅱ', 412, 27, 43, 32, () => { this.modal = 'pause'; this.render(); }, '#a1bfa5');
     p.text('wave', `${String(this.wave).padStart(2, '0')} / 15 波`, 388, 82, 13, '#d7dbc5', 'right', 115);
-    const arenaY = 120, arenaH = prep ? 128 : 345;
+    const arenaY = 120, arenaH = prep ? 116 : 345;
     this.corridor(p, arenaY, arenaH, prep);
-    this.stats(p, prep ? 278 : 491);
-    p.text('board-name', '我的武器书包', 54, prep ? 330 : 537, 18, C.ink, 'left', 240, true);
-    p.text('board-count', '6 × 5', 425, prep ? 330 : 537, 13, C.muted, 'right', 90);
+    this.stats(p, prep ? 260 : 491);
+    p.text('board-name', '我的武器书包', 54, prep ? 314 : 537, 18, C.ink, 'left', 240, true);
+    p.text('board-count', '6 × 5', 425, prep ? 314 : 537, 13, C.muted, 'right', 90);
     this.drawBoard(p);
     if (prep) this.preparation(p);
     else {
@@ -229,53 +288,63 @@ export class ClassroomGame extends Component {
     data.forEach(([name, value], i) => { const x = 72 + i * 84; p.text(`stat-name-${i}`, name, x, y - 8, 12, C.muted, 'center', 70); p.text(`stat-value-${i}`, value, x, y + 14, 22, i === 0 ? '#a25e37' : C.ink, 'center', 80, true); if (i < 4) p.line([[x + 41, y - 12], [x + 41, y + 23]], '#cdd1b9', 1); });
   }
   drawBoard(p: Painter) {
-    const { x, y, cell } = this.board, prep = this.phase === 'prepare';
+    const { x, y, cell } = this.board;
     p.box(x - 17, y - 12 + 6, 370, 303, '#a7b29d', 13, C.ink, 0);
     p.box(x - 17, y - 12, 370, 303, '#faf7e9', 13, C.ink, 2.3);
     for (let i = 0; i < 5; i++) { p.ellipse(x - 15, y + 24 + i * 56, 4, 9, '#617a68', '#617a68', 0); p.line([[x - 23, y + 22 + i * 56], [x - 12, y + 22 + i * 56]], '#bec7ae', 3); }
     const held = this.drag?.active ? this.inventory.get(this.drag.id) : undefined;
-    const hidden = held ? this.inventory.movingIds(held) : [];
+    const hidden = held ? this.inventory.movingIds(held) : this.returning?.hidden ?? [];
+    const available = new Set<string>(), mergeTargets: Item[] = [];
+    if (held) for (let row = 0; row < ROWS; row++) for (let col = 0; col < COLS; col++) {
+      const target: Place = { area: 'board', x: col, y: row };
+      const result = this.inventory.validate(held, target);
+      if (!result.ok) continue;
+      if (result.merged) mergeTargets.push(this.inventory.at(target, held.id)!);
+      // Grip cells are possible anchors for the entire assembly, as in the reference.
+      // Individual parts light their full footprint (including both stock cells).
+      if (held.kind === 'grip') { available.add(`${col},${row}`); continue; }
+      for (const part of this.inventory.footprint(held, target)) if (part.place.area === 'board') {
+        const def = DEFS[part.kind];
+        for (let dy = 0; dy < def.h; dy++) for (let dx = 0; dx < def.w; dx++) available.add(`${part.place.x + dx},${part.place.y + dy}`);
+      }
+    }
     for (let row = 0; row < 5; row++) for (let col = 0; col < 6; col++) {
-      const good = held && this.inventory.validate(held, { area: 'board', x: col, y: row }).ok;
-      const fill = held ? good ? '#b2d5a2' : '#e9c8b9' : (row + col) % 2 ? '#e7ebd8' : '#e1e7d2';
-      p.box(x + col * cell + 3, y + row * cell + 3, cell - 6, cell - 6, fill, 7, fill, 0);
-      if (good) p.ellipse(x + col * cell + 28, y + row * cell + 28, 3, 3, '#688d5b', '#688d5b', 0);
+      const good = available.has(`${col},${row}`);
+      const fill = held ? good ? C.valid : C.invalid : (row + col) % 2 ? '#e7ebd8' : '#e1e7d2';
+      p.box(x + col * cell + 5, y + row * cell + 5, cell - 10, cell - 10, fill, 8, fill, 0);
     }
     const items = this.inventory.items.filter(i => i.place.area === 'board' && !hidden.includes(i.id));
-    for (const item of items) {
-      if (item.place.area !== 'board') continue;
-      // Visible elastic bridges show stacked barrels as one assembled weapon.
-      if (item.kind === 'barrel') {
-        const pos = item.place;
-        if (items.some(i => i.kind === 'barrel' && i.place.area === 'board' && i.place.x === pos.x && i.place.y === pos.y + 1)) {
-          for (const off of [26, 128]) { p.line([[x + pos.x * cell + off, y + pos.y * cell + 35], [x + pos.x * cell + off - 9, y + (pos.y + 1) * cell + 18]], C.ink, 6); p.line([[x + pos.x * cell + off, y + pos.y * cell + 35], [x + pos.x * cell + off - 9, y + (pos.y + 1) * cell + 18]], '#97bcb0', 3); }
-        }
-      }
-      itemArt(p, item.kind, x + item.place.x * cell, y + item.place.y * cell, cell, item.level);
-    }
-    if (prep && held) { const target = this.dragTarget(); if (target?.area === 'board') { const ok = this.inventory.validate(held, target).ok; p.box(x + target.x * cell + 1, y + target.y * cell + 1, DEFS[held.kind].w * cell - 2, DEFS[held.kind].h * cell - 2, '#ffffff18', 6, ok ? '#527c42' : '#b85743', 3); } }
+    assemblyArt(p, this.inventory, items, x, y, cell);
+    for (const item of mergeTargets) if (item.place.area === 'board') p.star(x + (item.place.x + DEFS[item.kind].w) * cell - 9, y + item.place.y * cell + 10, 6);
   }
   preparation(p: Painter) {
-    p.text('stash-title', '课桌暂存', 54, 673, 12, C.muted, 'left', 130);
-    p.text('drag-tip', '拖动握把移动整枪 · 点击物品查看', 426, 673, 11, C.muted, 'right', 285);
-    const held = this.drag?.active ? this.drag.id : -1;
+    const held = this.drag?.active ? this.inventory.get(this.drag.id) : undefined;
+    const target = this.dragTarget();
     for (let slot = 0; slot < 10; slot++) {
-      const x = 53 + (slot % 5) * 76, y = 690 + Math.floor(slot / 5) * 46;
-      p.box(x, y, 68, 39, '#e1e4cd', 6, '#a5b09a', 1.3);
-      const item = this.inventory.items.find(i => i.place.area === 'stash' && i.place.slot === slot && i.id !== held);
-      if (item) { const cell = Math.min(31, 58 / DEFS[item.kind].w); itemArt(p, item.kind, x + (68 - cell * DEFS[item.kind].w) / 2, y + (39 - cell) / 2, cell, item.level); }
-      else p.line([[x + 31, y + 19], [x + 37, y + 19]], '#b0bca5', 1.5);
+      const { x, y, w, h } = this.stashRect(slot);
+      const result = held ? this.inventory.validate(held, { area: 'stash', slot }) : null;
+      const hover = held && target?.area === 'stash' && target.slot === slot;
+      const fill = hover ? result?.ok ? '#d3eeee' : C.invalid : C.slot;
+      p.box(x, y + 4, w, h, '#849f99', 9, C.ink, 2);
+      p.box(x, y, w, h, C.white, 9, C.ink, 2.5);
+      p.box(x + 5, y + 5, w - 10, h - 10, fill, 6, '#8badae', 1.5);
+      p.line([[x + 9, y + 8], [x + w - 9, y + 8]], '#ffffffa0', 2);
+      const item = this.inventory.items.find(i => i.place.area === 'stash' && i.place.slot === slot && i.id !== held?.id && !this.returning?.hidden.includes(i.id));
+      if (item && !(hover && result?.ok)) { const cell = this.stashCell(item); itemArt(p, item.kind, x + (w - cell * DEFS[item.kind].w) / 2, y + (h - cell) / 2 - 3, cell, item.level); this.levelStars(p, item, x + w / 2, y + h - 9, 3.5); }
+      if (result?.merged && !hover) p.star(x + w - 10, y + 11, 6);
+      if (held && result?.ok && !hover) p.line([[x + 22, y + h - 3], [x + w - 22, y + h - 3]], '#65b68c', 3);
     }
-    p.text('shop-name', '小卖部', 54, 786, 12, C.muted, 'left', 100);
-    p.text('shop-tip', '直接拖进书包，落下才扣钱', 426, 786, 11, C.muted, 'right', 220);
     this.offers.forEach((offer, i) => {
       const x = 52 + i * 128;
       p.box(x, 800, 120, 84, offer.sold ? '#dfe2cf' : C.white, 8, offer.sold ? '#bdc3aa' : '#8b9f88', 1.5);
-      if (offer.sold) { p.text(`sold-${i}`, '已买走', x + 60, 833, 17, '#849b7c', 'center', 116, true); p.text(`sold-note-${i}`, '刷新补货', x + 60, 864, 11, C.muted); return; }
-      const cell = Math.min(36, 92 / DEFS[offer.kind].w);
-      itemArt(p, offer.kind, x + (120 - cell * DEFS[offer.kind].w) / 2, 807, cell, offer.level);
-      p.text(`shop-item-${i}`, offer.kind === 'stock' && offer.level > 1 ? '木尺枪托' : DEFS[offer.kind].name, x + 60, 850, 12, C.ink, 'center', 115);
-      p.text(`shop-price-${i}`, `${offer.price} 零花钱${offer.level > 1 ? '  ★' + offer.level : ''}`, x + 60, 869, 12, this.coins >= offer.price ? '#997141' : '#b47b6a', 'center', 118, true);
+      if (offer.sold) { p.ellipse(x + 60, 839, 15, 15, '#a9bf9f', '#7a9470', 1.5); p.line([[x + 52, 839], [x + 58, 845], [x + 69, 831]], C.white, 3); return; }
+      shopItemArt(p, offer.kind, offer.level, x + 4, 802, 112, 74);
+      p.over(() => {
+        p.box(x + 32, 860, 56, 18, C.white, 8, C.white, 0);
+        p.ellipse(x + 42, 869, 6, 6, '#e8bf6c', '#997141', 1);
+      });
+      p.text(`shop-price-${i}`, offer.price, x + 66, 869, 14, this.coins >= offer.price ? '#997141' : '#b47b6a', 'center', 40, true);
+      for (let level = 0; level < offer.level; level++) p.star(x + 109 - level * 10, 810, 4);
     });
     const cost = this.wave === 0 && this.refreshes === 0 ? '免费' : '10';
     this.button(p, 'refresh', `换一批 · ${cost}`, 53, 904, 154, 42, () => this.refreshShop(), '#d5dfbd');
@@ -298,8 +367,11 @@ export class ClassroomGame extends Component {
     } else if (this.modal === 'help') {
       p.box(30, 156, 420, 666, C.paper, 18, C.ink, 3);
       p.text('help-title', '把文具，拼成战斗力。', 240, 196, 24, C.ink, 'center', 410, true);
-      itemArt(p, 'stock', 72, 308, 46); itemArt(p, 'barrel', 164, 308, 46); itemArt(p, 'grip', 164, 354, 46); itemArt(p, 'barrel', 164, 262, 46); itemArt(p, 'scope', 164, 216, 46);
-      const notes = ['01  握把是核心，拖它移动整个武器。', '02  发射器可叠在另一根发射器上方。', '03  枪托接左侧，瞄具接最上方。', '04  纸团、牛奶可以独立放入空格。', '05  绿色表示接口可用，红色不可放。', '06  暂存区的文具不会参与战斗。'];
+      const demo = new Inventory();
+      demo.add('stock', { area: 'board', x: 0, y: 2 }); demo.add('barrel', { area: 'board', x: 2, y: 1 });
+      demo.add('scope', { area: 'board', x: 2, y: 0 }); demo.add('magazine', { area: 'board', x: 3, y: 3 }); demo.add('underbarrel', { area: 'board', x: 4, y: 3 });
+      assemblyArt(p, demo, demo.items, 72, 216, 46);
+      const notes = ['01  拖握把移动整枪，初始枪管只回原位。', '02  同类同级拖到一起，合成升一级。', '03  绿格可放，黄角锁定当前落点。', '04  配件拖入蓝色暂存格，不参与战斗。', '05  每回合先投道具，再逐根枪管射击。', '06  敌人随后前进一步，进入范围放技能。'];
       notes.forEach((t, i) => p.text(`help-${i}`, t, 58, 407 + i * 43, 16, C.ink, 'left', 375));
       p.text('help-extra', '点击商品可购买并自动安装，也可以直接拖拽。', 240, 692, 12, C.muted);
       this.button(p, 'help-close', '知道了，去拼装', 91, 743, 298, 42, () => { this.modal = null; this.render(); });
@@ -311,16 +383,16 @@ export class ClassroomGame extends Component {
     } else if (this.modal === 'item' && this.selected) {
       const item = this.selected, def = DEFS[item.kind];
       p.box(40, 271, 400, 372, C.paper, 17, C.ink, 3);
-      p.text('item-title', item.kind === 'stock' && item.level > 1 ? '木尺枪托' : def.name, 240, 309, 25, C.ink, 'center', 380, true);
+      p.text('item-title', def.name, 240, 309, 25, C.ink, 'center', 380, true);
       itemArt(p, item.kind, 240 - def.w * 46 / 2, 349, 46, item.level);
       p.text('item-level', `等级 ${item.level}  ·  占用 ${def.w} × ${def.h} 格`, 240, 423, 14, C.muted);
-      const desc = item.kind === 'stock' && item.level > 1 ? '替换原枪托 · 命中提升至 94%' : def.subtitle;
+      const desc = item.kind === 'grip' ? def.subtitle : item.fixed ? '初始发射器不可拆卸 · 可接收同级合成' : item.kind === 'stock' ? `连接左侧 · 命中 +${item.level === 1 ? 5 : 9 + (item.level - 2) * 4}%` : def.subtitle;
       p.text('item-desc', desc, 240, 457, 14, C.ink, 'center', 375);
       const offerIndex = this.offers.findIndex(o => o.kind === item.kind && o.level === item.level && !o.sold);
       const exists = this.inventory.get(item.id);
       if (exists) {
-        if (exists.place.area === 'stash') this.button(p, 'auto-install', '寻找接口并安装', 80, 500, 320, 42, () => { const r = this.inventory.autoPlace(exists); this.say(r.reason); this.modal = null; this.save(); this.render(); }, C.mint);
-        else this.button(p, 'unequip', '拆下放入暂存区', 80, 500, 320, 42, () => { const slot = this.inventory.freeSlot(); if (slot < 0) { this.say('暂存区已满'); return; } this.inventory.move(exists.id, { area: 'stash', slot }); this.modal = null; this.save(); this.render(); }, '#dce2ca');
+        if (exists.place.area === 'stash') this.button(p, 'auto-install', '寻找接口并安装', 80, 500, 320, 42, () => { const r = this.autoInstall(exists); if (!r.ok) this.say(r.reason); this.modal = null; this.save(); this.render(); }, C.mint);
+        else p.text('item-drag-note', this.inventory.isFixed(exists) ? '固定部件不可拆卸' : '拖拽到课桌暂存区可拆下配件', 240, 521, 15, C.muted, 'center', 350);
       } else if (offerIndex >= 0) this.button(p, 'buy', `购买并安装 · ${this.offers[offerIndex].price}`, 80, 500, 320, 42, () => this.buy(offerIndex), C.orange, this.coins >= this.offers[offerIndex].price);
       this.button(p, 'item-close', '返回书包', 80, 563, 320, 38, () => { this.modal = null; this.render(); }, '#dce2ca');
     } else if (this.phase === 'reward') {
@@ -346,17 +418,47 @@ export class ClassroomGame extends Component {
     const p = this.floating; p.begin();
     if (this.drag?.active) {
       const drag = this.drag, item = this.inventory.get(drag.id)!;
-      const x = drag.x - drag.offX * 56, y = drag.y - drag.offY * 56;
-      for (const id of this.inventory.movingIds(item)) {
+      const { x, y, cell, target, result } = this.dragVisual();
+      const parts = this.inventory.movingIds(item).map(id => {
         const part = this.inventory.get(id)!;
-        const dx = item.place.area === 'board' && part.place.area === 'board' ? (part.place.x - item.place.x) * 56 : 0;
-        const dy = item.place.area === 'board' && part.place.area === 'board' ? (part.place.y - item.place.y) * 56 : 0;
-        itemArt(p, part.kind, x + dx, y + dy - 3, 56, part.level);
+        return { ...part, place: { area: 'board' as const,
+          x: item.place.area === 'board' && part.place.area === 'board' ? part.place.x - item.place.x : 0,
+          y: item.place.area === 'board' && part.place.area === 'board' ? part.place.y - item.place.y : 0 } };
+      });
+      if (target?.area === 'stash') p.ellipse(x + DEFS[item.kind].w * cell / 2, y + cell - 1, DEFS[item.kind].w * cell * 0.42, 3, '#293b3520', C.ink, 0);
+      assemblyArt(p, this.inventory, parts, x, y, cell);
+      if (target) {
+        const rects = target.area === 'stash' ? [this.stashRect(target.slot)] : this.inventory.footprint(item, target).map(part => this.itemRect(part));
+        const left = Math.max(this.board.x, Math.min(...rects.map(r => r.x))), top = Math.max(this.board.y, Math.min(...rects.map(r => r.y)));
+        const right = Math.min(this.board.x + COLS * 56, Math.max(...rects.map(r => r.x + r.w))), bottom = Math.min(this.board.y + ROWS * 56, Math.max(...rects.map(r => r.y + r.h)));
+        const rect = target.area === 'stash' ? rects[0] : { x: left, y: top, w: right - left, h: bottom - top };
+        if (rect.w > 8 && rect.h > 8) {
+          p.corners(rect.x + 2, rect.y + 2, rect.w - 4, rect.h - 4, result?.ok ? C.target : '#e26f62');
+          if (result?.merged) {
+            p.star(rect.x + rect.w / 2, rect.y + 7, 8 + Math.sin(this.clock * 8));
+            this.levelStars(p, { ...item, level: item.level + 1 }, rect.x + rect.w / 2, rect.y + rect.h - 8, 4);
+          } else if (!result?.ok) {
+            const cx = rect.x + rect.w - 9, cy = rect.y + 10;
+            p.ellipse(cx, cy, 8, 8, C.white, '#ad534a', 1.5);
+            p.line([[cx - 3, cy - 3], [cx + 3, cy + 3]], '#ad534a', 2); p.line([[cx - 3, cy + 3], [cx + 3, cy - 3]], '#ad534a', 2);
+          }
+        }
       }
-      const target = this.dragTarget(), result = target ? this.inventory.validate(item, target) : null;
-      const note = result ? result.ok ? target!.area === 'stash' ? '松手暂存' : '松手安装' : result.reason : '拖到绿色接口或暂存区';
-      p.box(58, 651, 366, 29, '#fffaf0ed', 14, result?.ok ? '#69945b' : '#aa8069', 1);
-      p.text('drag-result', note, 240, 665, 12, C.ink, 'center', 357, true);
+    }
+    if (this.returning) {
+      const r = this.returning, t = Math.min(1, (this.clock - r.start) / 0.32), ease = 1 - Math.pow(1 - t, 3);
+      assemblyArt(p, this.inventory, r.parts, r.x + (r.toX - r.x) * ease, r.y + (r.toY - r.y) * ease, r.fromCell + (r.cell - r.fromCell) * ease);
+    }
+    if (this.placementEffect && this.phase === 'prepare' && !this.modal) {
+      const effect = this.placementEffect, t = (this.clock - effect.start) / 0.5;
+      if (t < 1) {
+        const r = this.itemRect({ ...effect.item, place: effect.place }), inset = 2 + Math.sin(t * Math.PI) * 3;
+        p.corners(r.x + inset, r.y + inset, r.w - inset * 2, r.h - inset * 2, effect.merged ? C.target : '#7dd7a0', 4 * (1 - t) + 1);
+        if (effect.merged) for (let i = 0; i < 6; i++) {
+          const angle = i * Math.PI / 3, radius = 10 + t * 28;
+          p.star(r.x + r.w / 2 + Math.cos(angle) * radius, r.y + r.h / 2 + Math.sin(angle) * radius, 5 * (1 - t) + 1);
+        }
+      } else this.placementEffect = null;
     }
     if (this.toast && this.clock < this.toastUntil && !this.drag?.active) {
       p.box(30, 118, 420, 36, '#244d43ed', 18, '#abc4a7', 1); p.text('toast', this.toast, 240, 136, 13, '#fff6d9', 'center', 408);
@@ -380,33 +482,32 @@ export class ClassroomGame extends Component {
       if (battle) {
         for (const enemy of [...battle.enemies].sort((a, b) => a.y - b.y)) {
           if (enemy.x > 444) continue;
-          student(p, enemy.x, 133 + enemy.y, enemy.kind === 3 ? 82 : 50, this.clock * 9 + enemy.id, enemy.kind, enemy.hit > 0);
+          student(p, enemy.x, 133 + enemy.y, enemy.rank === 'boss' ? 82 : enemy.rank === 'elite' ? 63 : 50, battle.turn === 'enemies' ? this.clock * 9 + enemy.id : enemy.id, enemy.kind, enemy.hit > 0);
+          if (enemy.rank !== 'normal') p.text(`enemy-rank-${enemy.id}`, enemy.rank === 'boss' ? 'BOSS' : '精英', enemy.x, 133 + enemy.y - 64, 12, enemy.rank === 'boss' ? '#a94f40' : '#8b6a32', 'center', 75, true);
           if (enemy.hp < enemy.max) { p.box(enemy.x - 22, 133 + enemy.y - 35, 44, 5, '#82947f', 2, C.ink, 0); p.box(enemy.x - 22, 133 + enemy.y - 35, Math.max(1, 44 * enemy.hp / enemy.max), 5, C.orange, 2, C.ink, 0); }
         }
-        for (const shot of battle.shots) { p.line([[shot.x - 11, 133 + shot.y], [shot.x, 133 + shot.y]], '#f7d17e', 5); p.ellipse(shot.x, 133 + shot.y, 4, 3, '#fff7c0', C.ink, 0); }
+        for (const shot of battle.shots) {
+          if (shot.kind !== 'barrel') itemArt(p, shot.kind, shot.x - 9, 133 + shot.y - 9, 18, shot.level);
+          else { p.line([[shot.x - 11, 133 + shot.y], [shot.x, 133 + shot.y]], '#f7d17e', 5); p.ellipse(shot.x, 133 + shot.y, 4, 3, '#fff7c0', C.ink, 0); }
+        }
         battle.effects.forEach((effect, i) => {
           if (effect.kind === 'burst') { const r = (0.5 - effect.life) * 150 + 10; p.ellipse(effect.x, 133 + effect.y, r, r * 0.65, '#f6dc9a44', '#e4b76f', 3); }
           else p.text(`damage-${i}`, effect.text, Math.max(55, Math.min(418, effect.x)), 133 + effect.y, effect.text[0] === '!' ? 21 : 17, effect.kind === 'coin' ? '#6a874f' : '#9c542e', 'center', 90, true);
         });
         p.text('progress', `${battle.defeated} / ${battle.total}`, 404, 149, 13, '#61755f', 'center', 75);
+        p.text('turn', battle.turnLabel, 240, 423, 14, battle.turn === 'enemies' ? '#a05b45' : C.chalk, 'center', 330, true);
         p.box(32, 443, 416, 5, '#b6bea4', 3, C.ink, 0); p.box(32, 443, Math.max(1, 416 * battle.defeated / battle.total), 5, '#637f63', 3, C.ink, 0);
       }
     }
     p.end();
   }
   drawEquipped(p: Painter, x: number, y: number, cell: number) {
-    const grips = this.inventory.items.filter(i => i.kind === 'grip' && i.place.area === 'board');
-    grips.forEach((grip, index) => {
-      if (grip.place.area !== 'board') return;
-      const base = grip.place;
-      for (const part of this.inventory.connected(grip)) {
-        if (part.place.area !== 'board') continue;
-        itemArt(p, part.kind, x + (part.place.x - base.x) * cell, y + (part.place.y - base.y) * cell - index * 13, cell, part.level);
-      }
-    });
+    const grip = this.inventory.items.find(i => i.kind === 'grip' && i.place.area === 'board');
+    if (grip?.place.area === 'board') assemblyArt(p, this.inventory, this.inventory.connected(grip), x - grip.place.x * cell, y - grip.place.y * cell, cell);
   }
   update(dt: number) {
     this.clock += Math.min(dt, 0.1);
+    if (this.returning && this.clock - this.returning.start >= 0.32) { this.returning = null; this.render(); }
     if (this.phase === 'battle' && !this.modal && this.battle) {
       const count = this.battle.shots.length;
       const ticks = this.speed === 2 ? 2 : 1;
