@@ -1,7 +1,8 @@
 import { _decorator, Component, input, Input, EventMouse, EventTouch, EventKeyboard, KeyCode, UITransform, Vec3, view, ResolutionPolicy, sys, AudioSource, AudioClip, resources, game, Game } from 'cc';
 import { C, Painter, assemblyArt, itemArt, shopItemArt, student } from './Painter';
 import { ItemSprites } from './ItemSprites';
-import { COLS, ROWS, DEFS, Inventory, Item, Place, offersFor } from './core/Inventory';
+import { UiSprites } from './UiSprites';
+import { COLS, ROWS, DEFS, Inventory, Item, Place, offersFor, starsFor } from './core/Inventory';
 import { Battle } from './core/Battle';
 const { ccclass } = _decorator;
 type Phase = 'prepare' | 'battle' | 'reward' | 'victory' | 'defeat';
@@ -24,7 +25,7 @@ export class ClassroomGame extends Component {
   focus = -1; clock = 0; toast = ''; toastUntil = 0; feedback = ''; sound = true;
   lastDown = -1; lastDownX = 0; lastDownY = 0;
   soundSource!: AudioSource; clips = new Map<string, AudioClip>(); lastShots = 0;
-  spritesReady = false;
+  spritesReady = false; uiReady = false;
   board = { x: 72, y: 365, cell: 56 }; lastUiRevision = -1;
   onLoad() {
     view.setDesignResolutionSize(480, 960, ResolutionPolicy.SHOW_ALL);
@@ -32,11 +33,12 @@ export class ClassroomGame extends Component {
     this.back = new Painter(this.node, 'Notebook'); this.actors = new Painter(this.node, 'Students');
     this.overlay = new Painter(this.node, 'Dialogs'); this.floating = new Painter(this.node, 'Dragging');
     this.soundSource = this.node.addComponent(AudioSource);
-    for (const name of ['click', 'snap', 'pop', 'win']) resources.load(`audio/${name}`, AudioClip, (err, clip) => { if (!err) this.clips.set(name, clip); });
+    for (const name of ['click', 'snap', 'pop', 'win', 'assemble', 'merge']) resources.load(`audio/${name}`, AudioClip, (err, clip) => { if (!err) this.clips.set(name, clip); });
     this.restore();
     ItemSprites.load().then(() => {
       if (this.isValid) { this.spritesReady = true; this.render(); }
     }).catch(error => console.warn('文具图集加载失败，保留基础绘制。', error));
+    UiSprites.load().then(() => { if (this.isValid) { this.uiReady = true; this.render(); } }).catch(error => console.warn('界面图集加载失败。', error));
     input.on(Input.EventType.MOUSE_DOWN, this.mouseDown, this); input.on(Input.EventType.MOUSE_MOVE, this.mouseMove, this); input.on(Input.EventType.MOUSE_UP, this.mouseUp, this);
     input.on(Input.EventType.TOUCH_START, this.touchDown, this); input.on(Input.EventType.TOUCH_MOVE, this.touchMove, this); input.on(Input.EventType.TOUCH_END, this.touchUp, this); input.on(Input.EventType.TOUCH_CANCEL, this.cancelDrag, this);
     input.on(Input.EventType.KEY_DOWN, this.keyDown, this); game.on(Game.EVENT_HIDE, this.onHide, this);
@@ -94,7 +96,10 @@ export class ClassroomGame extends Component {
     return { x: drag.x - drag.offX * cell, y: drag.y - drag.offY * cell - 3, cell, target, result };
   }
   placementPulse(item: Item | undefined, merged = false) {
-    if (item) this.placementEffect = { place: { ...item.place }, item: { ...item }, merged, start: this.clock };
+    if (item) {
+      this.placementEffect = { place: { ...item.place }, item: { ...item }, merged, start: this.clock };
+      this.play(merged ? 'merge' : item.place.area === 'board' && !['grenade', 'medkit'].includes(item.kind) ? 'assemble' : 'snap');
+    }
   }
   autoInstall(item: Item) {
     const mergeTarget = this.inventory.items.find(i => i.id !== item.id && i.kind === item.kind && this.inventory.validate(item, i.place).merged);
@@ -102,8 +107,9 @@ export class ClassroomGame extends Component {
     if (result.ok) this.placementPulse(result.merged ? mergeTarget : item, result.merged);
     return result;
   }
-  levelStars(p: Painter, item: Item, x: number, y: number, size = 4) {
-    for (let i = 0; i < item.level; i++) p.star(x + (i - (item.level - 1) / 2) * (size * 2 + 1), y, size);
+  levelStars(p: Painter, item: Pick<Item, 'kind' | 'level'>, x: number, y: number, size = 4) {
+    const count = starsFor(item);
+    for (let i = 0; i < count; i++) p.star(x + (i - (count - 1) / 2) * (size * 2 + 1), y, size);
   }
   down({ x, y }: { x: number; y: number }) {
     if (this.drag || this.returning) return;
@@ -168,7 +174,7 @@ export class ClassroomGame extends Component {
     if (result.ok) {
       if (d.shop >= 0) { this.coins -= this.offers[d.shop].price; this.offers[d.shop].sold = true; }
       this.placementPulse(result.merged ? this.inventory.at(target!, item.id) : item, result.merged);
-      this.play('snap'); this.save();
+      this.save();
     } else { this.returnDrag(item, d); this.removeDraft(); }
     this.drag = null; this.render();
   }
@@ -186,7 +192,7 @@ export class ClassroomGame extends Component {
     }
     this.coins -= offer.price; offer.sold = true;
     this.modal = null;
-    this.play('snap'); this.save(); this.render();
+    this.save(); this.render();
   }
   refreshShop() {
     const cost = this.wave === 0 && this.refreshes === 0 ? 0 : 10;
@@ -228,8 +234,13 @@ export class ClassroomGame extends Component {
     }
   }
   button(p: Painter, key: string, text: string, x: number, y: number, w: number, h: number, action: () => void, color = C.mint, enabled = true) {
-    p.box(x, y + 4, w, h, C.ink, 9, C.ink, 0); p.box(x, y, w, h, enabled ? color : '#d0d2bf', 9, C.ink, 2.3);
-    p.text(`button-${key}`, text, x + w / 2, y + h / 2, 17, enabled ? C.ink : C.muted, 'center', w - 8, true);
+    p.surface(!enabled ? 'button-disabled' : color === C.orange ? 'button-primary' : color === '#e5dfca' || color === '#dce2ca' ? 'button-neutral' : 'button-secondary', x, y, w, h + 3, color);
+    if (key === 'pause' && p.icon('pause', x + (w - 28) / 2, y + 2, 28, h - 3)) { /* Icon replaces the pause glyph. */ }
+    else {
+      const refresh = key === 'refresh';
+      if (refresh) p.icon('refresh', x + 9, y + 9, 25, 25);
+      p.text(`button-${key}`, text, x + w / 2 + (refresh ? 12 : 0), y + h / 2, 17, enabled ? C.ink : C.muted, 'center', w - (refresh ? 38 : 8), true);
+    }
     this.buttons.push({ x, y, w, h, action, label: text, enabled });
   }
   render() {
@@ -238,13 +249,12 @@ export class ClassroomGame extends Component {
     p.box(0, 0, 480, 960, C.paper, 0, C.paper, 0);
     for (let y = 115; y < 960; y += 24) p.line([[16, y], [464, y]], '#e6e5d1', 1);
     p.line([[32, 110], [32, 952]], '#e4baa5', 1);
-    p.box(0, 0, 480, 106, C.chalk, 0, C.chalk, 0);
-    p.line([[21, 99], [459, 99]], '#719481', 1);
+    p.surface('panel-chalk', -6, -6, 492, 113, C.chalk);
     p.text('subhead', 'AFTER SCHOOL CLUB', 24, 19, 11, '#b9d1bd', 'left', 220);
     p.text('title', '下课别跑', 23, 52, 33, C.white, 'left', 220, true);
     p.text('chapter', '一年三班  /  放学后的操场', 25, 83, 12, '#d7dbc5', 'left', 260);
-    p.box(298, 25, 98, 34, '#355f4c', 17, '#72907b', 1);
-    p.ellipse(316, 42, 9, 9, '#e8bf6c', '#e8bf6c', 0); p.text('coins', this.coins, 346, 42, 18, '#f7df94', 'center', 56, true);
+    p.surface('toast', 298, 25, 98, 34, C.chalk);
+    p.icon('coin', 306, 32, 20, 20); p.text('coins', this.coins, 346, 42, 18, '#f7df94', 'center', 56, true);
     this.button(p, 'pause', 'Ⅱ', 412, 27, 43, 32, () => { this.modal = 'pause'; this.render(); }, '#a1bfa5');
     p.text('wave', `${String(this.wave).padStart(2, '0')} / 15 波`, 388, 82, 13, '#d7dbc5', 'right', 115);
     const arenaY = 120, arenaH = prep ? 116 : 345;
@@ -289,9 +299,7 @@ export class ClassroomGame extends Component {
   }
   drawBoard(p: Painter) {
     const { x, y, cell } = this.board;
-    p.box(x - 17, y - 12 + 6, 370, 303, '#a7b29d', 13, C.ink, 0);
-    p.box(x - 17, y - 12, 370, 303, '#faf7e9', 13, C.ink, 2.3);
-    for (let i = 0; i < 5; i++) { p.ellipse(x - 15, y + 24 + i * 56, 4, 9, '#617a68', '#617a68', 0); p.line([[x - 23, y + 22 + i * 56], [x - 12, y + 22 + i * 56]], '#bec7ae', 3); }
+    p.surface('panel-notebook', x - 17, y - 12, 370, 309);
     const held = this.drag?.active ? this.inventory.get(this.drag.id) : undefined;
     const hidden = held ? this.inventory.movingIds(held) : this.returning?.hidden ?? [];
     const available = new Set<string>(), mergeTargets: Item[] = [];
@@ -311,11 +319,13 @@ export class ClassroomGame extends Component {
     for (let row = 0; row < 5; row++) for (let col = 0; col < 6; col++) {
       const good = available.has(`${col},${row}`);
       const fill = held ? good ? C.valid : C.invalid : (row + col) % 2 ? '#e7ebd8' : '#e1e7d2';
-      p.box(x + col * cell + 5, y + row * cell + 5, cell - 10, cell - 10, fill, 8, fill, 0);
+      p.surface(held ? good ? 'grid-valid' : 'grid-invalid' : 'grid-neutral', x + col * cell + 5, y + row * cell + 5, cell - 10, cell - 10, fill, held ? 255 : 95);
     }
     const items = this.inventory.items.filter(i => i.place.area === 'board' && !hidden.includes(i.id));
-    assemblyArt(p, this.inventory, items, x, y, cell);
-    for (const item of mergeTargets) if (item.place.area === 'board') p.star(x + (item.place.x + DEFS[item.kind].w) * cell - 9, y + item.place.y * cell + 10, 6);
+    const effect = this.placementEffect, t = effect ? (this.clock - effect.start) / 0.6 : 1;
+    const pulse = effect && t < 1 ? { id: effect.item.id, bump: Math.sin(t * Math.PI * 2) * 0.1 * (1 - t) } : undefined;
+    assemblyArt(p, this.inventory, items, x, y, cell, pulse);
+    for (const item of mergeTargets) if (item.place.area === 'board') p.corners(x + item.place.x * cell + 3, y + item.place.y * cell + 3, DEFS[item.kind].w * cell - 6, cell - 6, C.target, 2);
   }
   preparation(p: Painter) {
     const held = this.drag?.active ? this.inventory.get(this.drag.id) : undefined;
@@ -325,26 +335,23 @@ export class ClassroomGame extends Component {
       const result = held ? this.inventory.validate(held, { area: 'stash', slot }) : null;
       const hover = held && target?.area === 'stash' && target.slot === slot;
       const fill = hover ? result?.ok ? '#d3eeee' : C.invalid : C.slot;
-      p.box(x, y + 4, w, h, '#849f99', 9, C.ink, 2);
-      p.box(x, y, w, h, C.white, 9, C.ink, 2.5);
-      p.box(x + 5, y + 5, w - 10, h - 10, fill, 6, '#8badae', 1.5);
-      p.line([[x + 9, y + 8], [x + w - 9, y + 8]], '#ffffffa0', 2);
+      p.surface(hover ? result?.ok ? 'slot-selected' : 'slot-invalid' : 'slot-empty', x, y, w, h + 3, fill);
       const item = this.inventory.items.find(i => i.place.area === 'stash' && i.place.slot === slot && i.id !== held?.id && !this.returning?.hidden.includes(i.id));
-      if (item && !(hover && result?.ok)) { const cell = this.stashCell(item); itemArt(p, item.kind, x + (w - cell * DEFS[item.kind].w) / 2, y + (h - cell) / 2 - 3, cell, item.level); this.levelStars(p, item, x + w / 2, y + h - 9, 3.5); }
-      if (result?.merged && !hover) p.star(x + w - 10, y + 11, 6);
+      if (item && !(hover && result?.ok)) { shopItemArt(p, item.kind, item.level, x + 6, y + 5, w - 12, h - 18); this.levelStars(p, item, x + w / 2, y + h - 8, 4); }
+      if (result?.merged && !hover) p.corners(x + 3, y + 3, w - 6, h - 6, C.target, 2);
       if (held && result?.ok && !hover) p.line([[x + 22, y + h - 3], [x + w - 22, y + h - 3]], '#65b68c', 3);
     }
     this.offers.forEach((offer, i) => {
       const x = 52 + i * 128;
-      p.box(x, 800, 120, 84, offer.sold ? '#dfe2cf' : C.white, 8, offer.sold ? '#bdc3aa' : '#8b9f88', 1.5);
-      if (offer.sold) { p.ellipse(x + 60, 839, 15, 15, '#a9bf9f', '#7a9470', 1.5); p.line([[x + 52, 839], [x + 58, 845], [x + 69, 831]], C.white, 3); return; }
-      shopItemArt(p, offer.kind, offer.level, x + 4, 802, 112, 74);
+      p.surface('card-shop', x, 800, 120, 87);
+      if (offer.sold) { p.icon('check', x + 43, 821, 34, 34); return; }
+      shopItemArt(p, offer.kind, offer.level, x + 10, 802, 100, 48);
       p.over(() => {
         p.box(x + 32, 860, 56, 18, C.white, 8, C.white, 0);
-        p.ellipse(x + 42, 869, 6, 6, '#e8bf6c', '#997141', 1);
+        p.icon('coin', x + 35, 862, 14, 14);
       });
       p.text(`shop-price-${i}`, offer.price, x + 66, 869, 14, this.coins >= offer.price ? '#997141' : '#b47b6a', 'center', 40, true);
-      for (let level = 0; level < offer.level; level++) p.star(x + 109 - level * 10, 810, 4);
+      this.levelStars(p, offer, x + 60, 854, 4);
     });
     const cost = this.wave === 0 && this.refreshes === 0 ? '免费' : '10';
     this.button(p, 'refresh', `换一批 · ${cost}`, 53, 904, 154, 42, () => this.refreshShop(), '#d5dfbd');
@@ -355,7 +362,7 @@ export class ClassroomGame extends Component {
     if (!this.modal && !['reward', 'defeat', 'victory'].includes(this.phase)) { p.end(); return; }
     this.buttons = []; p.box(0, 0, 480, 960, '#172c27d9', 0, C.ink, 0);
     if (this.modal === 'pause') {
-      p.box(47, 258, 386, 409, C.paper, 18, C.ink, 3);
+      p.surface('panel-dialog', 47, 258, 386, 409);
       p.text('pause-small', '课 间 休 息', 240, 297, 13, C.muted);
       p.text('pause-title', '喘口气，再出发。', 240, 343, 26, C.ink, 'center', 366, true);
       this.button(p, 'resume', '继续游戏', 87, 387, 306, 43, () => { this.modal = null; this.render(); }, C.mint);
@@ -365,7 +372,7 @@ export class ClassroomGame extends Component {
       p.text('pause-tip', '空格：开战 / 暂停    R：刷新商店', 240, 584, 13, C.muted);
       p.text('pause-tip2', '1 / 2 / 3：购买并安装对应商品', 240, 612, 13, C.muted);
     } else if (this.modal === 'help') {
-      p.box(30, 156, 420, 666, C.paper, 18, C.ink, 3);
+      p.surface('panel-dialog', 30, 156, 420, 666);
       p.text('help-title', '把文具，拼成战斗力。', 240, 196, 24, C.ink, 'center', 410, true);
       const demo = new Inventory();
       demo.add('stock', { area: 'board', x: 0, y: 2 }); demo.add('barrel', { area: 'board', x: 2, y: 1 });
@@ -376,16 +383,17 @@ export class ClassroomGame extends Component {
       p.text('help-extra', '点击商品可购买并自动安装，也可以直接拖拽。', 240, 692, 12, C.muted);
       this.button(p, 'help-close', '知道了，去拼装', 91, 743, 298, 42, () => { this.modal = null; this.render(); });
     } else if (this.modal === 'restart') {
-      p.box(47, 314, 386, 285, C.paper, 18, C.ink, 3); p.text('restart-title', '重新放一次学？', 240, 364, 25, C.ink, 'center', 360, true);
+      p.surface('panel-dialog', 47, 314, 386, 285); p.text('restart-title', '重新放一次学？', 240, 364, 25, C.ink, 'center', 360, true);
       p.text('restart-note', '这次的书包、零花钱和波次会重置。', 240, 410, 15, C.muted);
       this.button(p, 'cancel-restart', '继续这一局', 76, 477, 155, 46, () => { this.modal = 'pause'; this.render(); }, '#dce3cd');
       this.button(p, 'confirm-restart', '重新开始', 249, 477, 155, 46, () => this.newRun(), C.orange);
     } else if (this.modal === 'item' && this.selected) {
       const item = this.selected, def = DEFS[item.kind];
-      p.box(40, 271, 400, 372, C.paper, 17, C.ink, 3);
+      p.surface('panel-dialog', 40, 271, 400, 372);
       p.text('item-title', def.name, 240, 309, 25, C.ink, 'center', 380, true);
       itemArt(p, item.kind, 240 - def.w * 46 / 2, 349, 46, item.level);
-      p.text('item-level', `等级 ${item.level}  ·  占用 ${def.w} × ${def.h} 格`, 240, 423, 14, C.muted);
+      this.levelStars(p, item, 240, 411, 5);
+      p.text('item-level', `占用 ${def.w} × ${def.h} 格`, 240, 435, 14, C.muted);
       const desc = item.kind === 'grip' ? def.subtitle : item.fixed ? '初始发射器不可拆卸 · 可接收同级合成' : item.kind === 'stock' ? `连接左侧 · 命中 +${item.level === 1 ? 5 : 9 + (item.level - 2) * 4}%` : def.subtitle;
       p.text('item-desc', desc, 240, 457, 14, C.ink, 'center', 375);
       const offerIndex = this.offers.findIndex(o => o.kind === item.kind && o.level === item.level && !o.sold);
@@ -399,14 +407,14 @@ export class ClassroomGame extends Component {
       p.text('reward-small', '放学小奖励', 240, 250, 17, '#b2c8af'); p.text('reward-title', '今天，又厉害了一点。', 240, 293, 27, C.white, 'center', 450, true);
       const rewards = [['手工达人', '火力 +15%', 'barrel'], ['运动健将', '体力上限 +200', 'medkit'], ['零花钱自由', '零花钱 +40', 'grenade']] as const;
       rewards.forEach(([name, note, kind], i) => {
-        const x = 25 + i * 148; p.box(x, 362, 134, 243, C.paper, 12, '#89a385', 2);
+        const x = 25 + i * 148; p.surface('card-reward', x, 362, 134, 243);
         const c = kind === 'barrel' ? 32 : 52; itemArt(p, kind, x + (134 - DEFS[kind].w * c) / 2, 389, c);
         p.text(`reward-name-${i}`, name, x + 67, 475, 18, C.ink, 'center', 130, true); p.text(`reward-note-${i}`, note, x + 67, 508, 13, C.muted, 'center', 132);
         this.button(p, `reward-${i}`, '就选这个', x + 9, 550, 116, 34, () => this.reward(i), C.mint);
       });
       p.text('reward-hint', '选择一项，带着新本领继续下一波', 240, 658, 14, '#c4d2bc');
     } else {
-      const win = this.phase === 'victory'; p.box(39, 245, 402, 460, C.paper, 18, C.ink, 3);
+      const win = this.phase === 'victory'; p.surface('panel-dialog', 39, 245, 402, 460);
       student(p, 240, 327, 85, 0); p.text('end-title', win ? '放学大作战，通关！' : '被留下补作业了…', 240, 426, 27, C.ink, 'center', 390, true);
       p.text('end-wave', `坚持了 ${this.wave} 波  ·  组合火力 ${this.inventory.stats().damage}`, 240, 477, 17, C.muted);
       p.text('end-note', win ? '15 波挑战完成，你就是操场传说。' : '多接一根发射器，再试一次吧。', 240, 520, 15, C.muted);
@@ -426,7 +434,10 @@ export class ClassroomGame extends Component {
           y: item.place.area === 'board' && part.place.area === 'board' ? part.place.y - item.place.y : 0 } };
       });
       if (target?.area === 'stash') p.ellipse(x + DEFS[item.kind].w * cell / 2, y + cell - 1, DEFS[item.kind].w * cell * 0.42, 3, '#293b3520', C.ink, 0);
-      assemblyArt(p, this.inventory, parts, x, y, cell);
+      if (target?.area === 'stash' && result?.ok) {
+        const r = this.stashRect(target.slot); shopItemArt(p, item.kind, item.level, r.x + 6, r.y + 5, r.w - 12, r.h - 18);
+        if (!result.merged) this.levelStars(p, item, r.x + r.w / 2, r.y + r.h - 8, 4);
+      } else assemblyArt(p, this.inventory, parts, x, y, cell);
       if (target) {
         const rects = target.area === 'stash' ? [this.stashRect(target.slot)] : this.inventory.footprint(item, target).map(part => this.itemRect(part));
         const left = Math.max(this.board.x, Math.min(...rects.map(r => r.x))), top = Math.max(this.board.y, Math.min(...rects.map(r => r.y)));
@@ -435,8 +446,7 @@ export class ClassroomGame extends Component {
         if (rect.w > 8 && rect.h > 8) {
           p.corners(rect.x + 2, rect.y + 2, rect.w - 4, rect.h - 4, result?.ok ? C.target : '#e26f62');
           if (result?.merged) {
-            p.star(rect.x + rect.w / 2, rect.y + 7, 8 + Math.sin(this.clock * 8));
-            this.levelStars(p, { ...item, level: item.level + 1 }, rect.x + rect.w / 2, rect.y + rect.h - 8, 4);
+            if (target.area === 'stash') this.levelStars(p, { ...item, level: item.level + 1 }, rect.x + rect.w / 2, rect.y + rect.h - 8, 4);
           } else if (!result?.ok) {
             const cx = rect.x + rect.w - 9, cy = rect.y + 10;
             p.ellipse(cx, cy, 8, 8, C.white, '#ad534a', 1.5);
@@ -450,18 +460,17 @@ export class ClassroomGame extends Component {
       assemblyArt(p, this.inventory, r.parts, r.x + (r.toX - r.x) * ease, r.y + (r.toY - r.y) * ease, r.fromCell + (r.cell - r.fromCell) * ease);
     }
     if (this.placementEffect && this.phase === 'prepare' && !this.modal) {
-      const effect = this.placementEffect, t = (this.clock - effect.start) / 0.5;
+      const effect = this.placementEffect, t = (this.clock - effect.start) / 0.6;
       if (t < 1) {
-        const r = this.itemRect({ ...effect.item, place: effect.place }), inset = 2 + Math.sin(t * Math.PI) * 3;
-        p.corners(r.x + inset, r.y + inset, r.w - inset * 2, r.h - inset * 2, effect.merged ? C.target : '#7dd7a0', 4 * (1 - t) + 1);
-        if (effect.merged) for (let i = 0; i < 6; i++) {
-          const angle = i * Math.PI / 3, radius = 10 + t * 28;
-          p.star(r.x + r.w / 2 + Math.cos(angle) * radius, r.y + r.h / 2 + Math.sin(angle) * radius, 5 * (1 - t) + 1);
-        }
+        const r = this.itemRect({ ...effect.item, place: effect.place });
+        const board = effect.place.area === 'board', kind = effect.item.kind;
+        const cx = board && kind === 'stock' ? r.x + r.w - 4 : r.x + r.w / 2;
+        const cy = board && kind === 'scope' ? r.y + r.h + 5 : board && ['grip', 'magazine', 'underbarrel'].includes(kind) ? r.y - 11 : r.y + r.h / 2;
+        p.smoke(cx, cy, t, effect.merged ? 1.1 : 0.85);
       } else this.placementEffect = null;
     }
     if (this.toast && this.clock < this.toastUntil && !this.drag?.active) {
-      p.box(30, 118, 420, 36, '#244d43ed', 18, '#abc4a7', 1); p.text('toast', this.toast, 240, 136, 13, '#fff6d9', 'center', 408);
+      p.surface('toast', 30, 118, 420, 36, C.chalk); p.text('toast', this.toast, 240, 136, 13, '#fff6d9', 'center', 408);
     }
     if (this.focus >= 0) { const b = this.buttons.filter(b => b.enabled)[this.focus]; if (b) p.box(b.x - 4, b.y - 4, b.w + 8, b.h + 8, '#ffffff00', 12, '#f9ca69', 3); }
     p.end();
@@ -477,14 +486,14 @@ export class ClassroomGame extends Component {
       student(p, 72, 339, 70, this.clock * 3);
       const recoil = (battle?.recoil || 0) * 5;
       this.drawEquipped(p, 95 - recoil, 342, 16);
-      p.box(30, 290, 88, 9, '#83987c', 4, C.ink, 1); p.box(31, 291, Math.max(1, 86 * (battle?.hp ?? this.hp) / this.maxHp), 7, '#b1d68e', 3, C.ink, 0);
+      p.surface('health-track', 30, 290, 88, 9); p.surface('health-fill', 31, 291, Math.max(1, 86 * (battle?.hp ?? this.hp) / this.maxHp), 7);
       p.text('hp', `${Math.ceil(battle?.hp ?? this.hp)}`, 74, 277, 13, C.ink, 'center', 100, true);
       if (battle) {
         for (const enemy of [...battle.enemies].sort((a, b) => a.y - b.y)) {
           if (enemy.x > 444) continue;
           student(p, enemy.x, 133 + enemy.y, enemy.rank === 'boss' ? 82 : enemy.rank === 'elite' ? 63 : 50, battle.turn === 'enemies' ? this.clock * 9 + enemy.id : enemy.id, enemy.kind, enemy.hit > 0);
           if (enemy.rank !== 'normal') p.text(`enemy-rank-${enemy.id}`, enemy.rank === 'boss' ? 'BOSS' : '精英', enemy.x, 133 + enemy.y - 64, 12, enemy.rank === 'boss' ? '#a94f40' : '#8b6a32', 'center', 75, true);
-          if (enemy.hp < enemy.max) { p.box(enemy.x - 22, 133 + enemy.y - 35, 44, 5, '#82947f', 2, C.ink, 0); p.box(enemy.x - 22, 133 + enemy.y - 35, Math.max(1, 44 * enemy.hp / enemy.max), 5, C.orange, 2, C.ink, 0); }
+          if (enemy.hp < enemy.max) { p.surface('health-track', enemy.x - 22, 133 + enemy.y - 35, 44, 5); p.surface('health-fill', enemy.x - 22, 133 + enemy.y - 35, Math.max(1, 44 * enemy.hp / enemy.max), 5); }
         }
         for (const shot of battle.shots) {
           if (shot.kind !== 'barrel') itemArt(p, shot.kind, shot.x - 9, 133 + shot.y - 9, 18, shot.level);
@@ -496,7 +505,7 @@ export class ClassroomGame extends Component {
         });
         p.text('progress', `${battle.defeated} / ${battle.total}`, 404, 149, 13, '#61755f', 'center', 75);
         p.text('turn', battle.turnLabel, 240, 423, 14, battle.turn === 'enemies' ? '#a05b45' : C.chalk, 'center', 330, true);
-        p.box(32, 443, 416, 5, '#b6bea4', 3, C.ink, 0); p.box(32, 443, Math.max(1, 416 * battle.defeated / battle.total), 5, '#637f63', 3, C.ink, 0);
+        p.surface('health-track', 32, 443, 416, 5); p.surface('health-fill', 32, 443, Math.max(1, 416 * battle.defeated / battle.total), 5);
       }
     }
     p.end();
@@ -507,6 +516,7 @@ export class ClassroomGame extends Component {
   }
   update(dt: number) {
     this.clock += Math.min(dt, 0.1);
+    if (this.placementEffect && this.phase === 'prepare' && !this.modal) this.render();
     if (this.returning && this.clock - this.returning.start >= 0.32) { this.returning = null; this.render(); }
     if (this.phase === 'battle' && !this.modal && this.battle) {
       const count = this.battle.shots.length;

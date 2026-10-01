@@ -2,7 +2,9 @@ export type Kind = 'grip' | 'barrel' | 'stock' | 'scope' | 'grenade' | 'underbar
 export type Place = { area: 'board'; x: number; y: number } | { area: 'stash'; slot: number };
 export interface Item { id: number; kind: Kind; level: number; place: Place; fixed?: boolean }
 export interface Definition { name: string; subtitle: string; w: number; h: number; price: number; color: string }
-export const COLS = 6, ROWS = 5, STASH_SIZE = 10, MAX_LEVEL = 5;
+export const COLS = 6, ROWS = 5, STASH_SIZE = 10, MAX_STARS = 5, MAX_LEVEL = MAX_STARS + 1;
+/** Internal level 1 is the unstarred base item; its first merge earns one star. */
+export function starsFor(item: Pick<Item, 'kind' | 'level'>): number { return item.kind === 'grip' ? 0 : Math.max(0, Math.min(MAX_STARS, item.level - 1)); }
 export const DEFS: Record<Kind, Definition> = {
   grip: { name: '橡皮握把', subtitle: '唯一握把 · 与初始发射器固定，拖动移动整枪', w: 1, h: 1, price: 0, color: '#eaa293' },
   barrel: { name: '尺子发射器', subtitle: '连接握把或另一根发射器 · 火力 +651', w: 3, h: 1, price: 15, color: '#eabd64' },
@@ -29,7 +31,7 @@ export class Inventory {
   }
   add(kind: Kind, place: Place, level = 1): Item {
     if (kind === 'grip' && this.items.some(i => i.kind === 'grip')) throw new Error('只能有一个握把');
-    const item: Item = { id: this.nextId++, kind, level, place };
+    const item: Item = { id: this.nextId++, kind, level: kind === 'grip' ? 1 : level, place };
     this.items.push(item); this.revision++; return item;
   }
   get(id: number) { return this.items.find(i => i.id === id); }
@@ -111,7 +113,7 @@ export class Inventory {
       if (there.level !== item.level) return { ok: false, reason: '同类同级部件才能合成' };
       if (there.level >= MAX_LEVEL) return { ok: false, reason: '部件已满级' };
       if (!this.assemblyValid(this.items.filter(i => i.id !== item.id))) return { ok: false, reason: '请先拖走连接在此部件上的配件' };
-      return { ok: true, reason: `合成为 ${there.level + 1} 级部件`, merged: true };
+      return { ok: true, reason: `合成为 ${there.level} 星部件`, merged: true };
     }
     if (target.area === 'stash' && there) return { ok: false, reason: '这个暂存格已经有物品' };
     const moved = this.footprint(item, target);
@@ -164,7 +166,7 @@ export class Inventory {
     if (grips.length !== 1 || grips[0].place.area !== 'board') throw new Error('Invalid grip');
     const base = inv.items.find(i => i.kind === 'barrel' && inv.linked(grips[0], i));
     if (!base || inv.items.some(i => i.fixed && i.id !== base.id && i.id !== grips[0].id) || !inv.assemblyValid(inv.items)) throw new Error('Invalid fixed assembly');
-    grips[0].fixed = true; base.fixed = true;
+    grips[0].level = 1; grips[0].fixed = true; base.fixed = true;
     inv.nextId = Math.max(0, ...Array.from(ids)) + 1; return inv;
   }
 }

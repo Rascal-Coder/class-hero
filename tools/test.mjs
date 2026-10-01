@@ -1,10 +1,11 @@
 import assert from 'node:assert/strict';
 import {loadCore} from './runtime.mjs';
-const {Inventory,offersFor,DEFS,MAX_LEVEL}=loadCore('Inventory');
+const {Inventory,offersFor,DEFS,MAX_LEVEL,starsFor}=loadCore('Inventory');
 const {Battle}=loadCore('Battle');
 let count=0;
 function test(name,fn){try{fn();console.log('PASS',name);count++;}catch(e){console.error('FAIL',name);throw e;}}
 const board=(x,y)=>({area:'board',x,y});
+test('Base parts merge through one to five stars; fixed grip never gains stars',()=>{const i=new Inventory();const target=i.add('grenade',{area:'stash',slot:0});assert.equal(starsFor(target),0);for(let level=1;level<MAX_LEVEL;level++){const source=i.add('grenade',{area:'stash',slot:1},level);assert.equal(i.move(source.id,target.place).merged,true);assert.equal(starsFor(target),level);}assert.equal(starsFor(target),5);assert.equal(Inventory.restore(i.serialize()).get(target.id).level,6);assert.equal(starsFor({kind:'grip',level:6}),0);const legacy=i.serialize();legacy.items[0].level=5;assert.equal(Inventory.restore(legacy).get(1).level,1);});
 test('Reference 0s: 651 / 85% / 3% / 150% / 0%',()=>{const s=new Inventory().stats();assert.deepEqual([s.damage,s.accuracy,s.crit,s.critDamage,s.bounce],[651,85,3,150,0]);});
 test('Reference 3s: stock snaps to the left socket and adds 5% accuracy',()=>{const i=new Inventory(),s=i.add('stock',{area:'stash',slot:0});assert.equal(i.move(s.id,board(0,2)).ok,true);assert.equal(i.stats().accuracy,90);});
 test('Reference 5s: independent grenade increases total damage to 839',()=>{const i=new Inventory();i.add('grenade',board(0,0));assert.equal(i.stats().damage,839);});

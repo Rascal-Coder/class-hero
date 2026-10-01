@@ -1,39 +1,73 @@
 import { Color, Graphics, Label, Node, UITransform, Layers, Sprite, SpriteFrame } from 'cc';
-import { Inventory, Item, Kind } from './core/Inventory';
-import { ItemSprites, TapeKind } from './ItemSprites';
+import { DEFS, Inventory, Item, Kind } from './core/Inventory';
+import { ItemSprites } from './ItemSprites';
+import { UiSprites } from './UiSprites';
 export const C = { ink: '#293b35', muted: '#76847a', paper: '#f4efdf', white: '#fffaf0', chalk: '#244d43', mint: '#b4d9b5', orange: '#e99761', line: '#d4d7bd', blue: '#8bafc1', red: '#d77666', valid: '#a9efac', invalid: '#efa99e', target: '#ffe45e', slot: '#bdd7d8' };
 export class Painter {
-  node: Node; g: Graphics; labels = new Map<string, Label>(); used = new Set<string>();
+  node: Node; labels = new Map<string, Label>(); used = new Set<string>();
   private marks: Graphics; private sprites: Sprite[] = []; private spriteCount = 0;
+  private drawRoot: Node; private batches: Graphics[] = []; private batchCount = 0;
+  private order = 0; private pending = true; private foreground = 0; private current!: Graphics;
   constructor(parent: Node, name: string) {
     this.node = new Node(name); this.node.layer = Layers.Enum.UI_2D; parent.addChild(this.node);
     this.node.addComponent(UITransform).setContentSize(480, 960);
     this.node.setPosition(-240, 480);
-    this.g = this.node.addComponent(Graphics);
+    this.drawRoot = new Node('Artwork'); this.drawRoot.layer = Layers.Enum.UI_2D; this.node.addChild(this.drawRoot);
+    this.drawRoot.addComponent(UITransform);
     const marks = new Node('Highlights'); marks.layer = Layers.Enum.UI_2D; this.node.addChild(marks);
     marks.addComponent(UITransform); this.marks = marks.addComponent(Graphics);
   }
-  begin() { this.g.clear(); this.marks.clear(); this.used.clear(); this.spriteCount = 0; }
+  // Split Graphics around sprites so PNG panels, grid cells and objects retain paint order.
+  get g(): Graphics {
+    if (this.foreground) return this.marks;
+    if (this.pending) {
+      let graphics = this.batches[this.batchCount++];
+      if (!graphics) {
+        const node = new Node(`ink-${this.batches.length}`); node.layer = Layers.Enum.UI_2D; this.drawRoot.addChild(node);
+        node.addComponent(UITransform); graphics = node.addComponent(Graphics); this.batches.push(graphics);
+      }
+      graphics.node.active = true; graphics.clear(); graphics.node.setSiblingIndex(this.order++);
+      this.current = graphics; this.pending = false;
+    }
+    return this.current;
+  }
+  begin() { this.marks.clear(); this.used.clear(); this.spriteCount = this.batchCount = this.order = this.foreground = 0; this.pending = true; }
   end() {
     this.labels.forEach((label, key) => { label.node.active = this.used.has(key); });
     this.sprites.forEach((sprite, index) => { sprite.node.active = index < this.spriteCount; });
+    this.batches.forEach((graphics, index) => { graphics.node.active = index < this.batchCount; });
   }
-  sprite(frame: SpriteFrame, x: number, y: number, w: number, h: number, angle = 0, front = false, alpha = 255) {
+  sprite(frame: SpriteFrame, x: number, y: number, w: number, h: number, angle = 0, front = false, alpha = 255, sliced = false) {
     let sprite = this.sprites[this.spriteCount++];
     if (!sprite) {
       const node = new Node(`item-sprite-${this.sprites.length}`); node.layer = Layers.Enum.UI_2D;
-      this.node.addChild(node);
+      this.drawRoot.addChild(node);
       node.addComponent(UITransform); sprite = node.addComponent(Sprite);
       sprite.sizeMode = Sprite.SizeMode.CUSTOM; this.sprites.push(sprite);
     }
     sprite.node.active = true; sprite.spriteFrame = frame; sprite.color = new Color(255, 255, 255, alpha);
-    sprite.node.getComponent(UITransform)!.setContentSize(w, h);
+    sprite.type = sliced ? Sprite.Type.SLICED : Sprite.Type.SIMPLE;
+    const scale = sliced ? 0.35 : 1; sprite.node.setScale(scale, scale, 1);
+    sprite.node.getComponent(UITransform)!.setContentSize(w / scale, h / scale);
     sprite.node.setPosition(x + w / 2, -y - h / 2); sprite.node.angle = angle;
-    sprite.node.setSiblingIndex(front ? this.marks.node.getSiblingIndex() : 0);
+    const above = front || this.foreground > 0, parent = above ? this.marks.node : this.drawRoot;
+    if (sprite.node.parent !== parent) sprite.node.setParent(parent);
+    sprite.node.setSiblingIndex(above ? parent.children.length - 1 : this.order++);
+    if (!above) this.pending = true;
   }
   /** Price marks and stars paint above item sprites. */
   over(draw: () => void) {
-    const graphics = this.g; this.g = this.marks; draw(); this.g = graphics;
+    this.foreground++; try { draw(); } finally { this.foreground--; }
+  }
+  surface(key: string, x: number, y: number, w: number, h: number, fallback = C.paper, alpha = 255) {
+    const frame = UiSprites.frame(key);
+    if (frame) this.sprite(frame, x, y, w, h, 0, false, alpha, true);
+    else this.box(x, y, w, h, fallback);
+  }
+  icon(key: string, x: number, y: number, w: number, h: number, front = false): boolean {
+    const frame = UiSprites.frame(key); if (!frame) return false;
+    const scale = Math.min(w / frame.rect.width, h / frame.rect.height), width = frame.rect.width * scale, height = frame.rect.height * scale;
+    this.sprite(frame, x + (w - width) / 2, y + (h - height) / 2, width, height, 0, front); return true;
   }
   color(hex: string) { return new Color().fromHEX(hex); }
   style(fill: string, stroke = C.ink, line = 2) { this.g.fillColor = this.color(fill); this.g.strokeColor = this.color(stroke); this.g.lineWidth = line; }
@@ -51,20 +85,31 @@ export class Painter {
     this.g.strokeColor = this.color(color); this.g.lineWidth = width; this.g.moveTo(points[0][0], -points[0][1]); for (const [x, y] of points.slice(1)) this.g.lineTo(x, -y); this.g.stroke();
   }
   corners(x: number, y: number, w: number, h: number, color = C.target, width = 4) {
-    const graphics = this.g; this.g = this.marks;
+    this.over(() => {
     const size = Math.min(13, w / 4, h / 4);
     for (const [cx, cy, sx, sy] of [[x, y, 1, 1], [x + w, y, -1, 1], [x, y + h, 1, -1], [x + w, y + h, -1, -1]]) {
       const points = [[cx, cy + sy * size], [cx, cy], [cx + sx * size, cy]];
       this.line(points, C.ink, width + 3); this.line(points, color, width);
     }
-    this.g = graphics;
+    });
   }
   star(x: number, y: number, radius: number, color = C.target) {
+    if (this.icon('star', x - radius, y - radius, radius * 2, radius * 2, true)) return;
     const points = Array.from({ length: 10 }, (_, i) => {
       const angle = -Math.PI / 2 + i * Math.PI / 5, r = i % 2 ? radius * 0.46 : radius;
       return [x + Math.cos(angle) * r, y + Math.sin(angle) * r];
     });
-    const graphics = this.g; this.g = this.marks; this.path(points, color, C.ink, 1); this.g = graphics;
+    this.over(() => this.path(points, color, C.ink, 1));
+  }
+  smoke(x: number, y: number, t: number, scale = 1) {
+    const alpha = Math.round(Math.min(1, (1 - t) * 1.6) * 220).toString(16).padStart(2, '0');
+    this.over(() => {
+      for (let i = 0; i < 7; i++) {
+        const angle = i * Math.PI * 2 / 7, distance = (3 + t * 24) * scale;
+        const radius = (5 + Math.sin(Math.min(1, t * 1.7) * Math.PI) * 5) * (1 - t * 0.6) * scale;
+        this.ellipse(x + Math.cos(angle) * distance, y + Math.sin(angle) * distance * 0.75 - t * 8, radius, radius * 0.85, '#fff9e9' + alpha, '#b6c6ae' + alpha, 0.8);
+      }
+    });
   }
   text(key: string, value: string | number, x: number, y: number, size = 18, color = C.ink, align: 'left' | 'center' | 'right' = 'center', width = 460, bold = false) {
     this.used.add(key); let label = this.labels.get(key);
@@ -83,19 +128,27 @@ export class Painter {
   }
 }
 
-export function itemArt(p: Painter, kind: Kind, x: number, y: number, cell: number, level = 1) {
+export function itemArt(p: Painter, kind: Kind, x: number, y: number, cell: number, level = 1, mounted = false) {
   const s = cell / 56, X = (n: number) => x + n * s, Y = (n: number) => y + n * s;
   const frame = ItemSprites.frame(kind, level);
   if (frame) {
+    if (mounted && !['grenade', 'medkit'].includes(kind)) {
+      const sockets: Partial<Record<Kind, number[]>> = {
+        barrel: [-1, -1, 170, 58], stock: [1, 5, 122, 47], grip: [5, -14, 48, 64],
+        scope: [3, 7, 50, 59], magazine: [5, -15, 46, 63], underbarrel: [6, -15, 44, 63],
+      };
+      const [bx, by, bw, bh] = sockets[kind]!;
+      p.sprite(frame, X(bx), Y(by), bw * s, bh * s); return;
+    }
     // Side-view bounds preserve the existing board sockets and occupied cells.
     const bounds: Record<Kind, number[]> = {
-      barrel: [1, 7, 166, 38], stock: [4, 7, 106, 42], grip: [5, -9, 48, 57],
-      scope: [4, 1, 48, 54], magazine: [5, 1, 46, 48],
-      grenade: [5, 1, 46, 48], underbarrel: [6, 0, 44, 50], medkit: [7, 1, 42, 49],
+      barrel: [1, 7, 166, 38], stock: [2, 7, 110, 42], grip: [5, 0, 48, 50],
+      scope: [4, 0, 48, 52], magazine: [5, 0, 46, 52],
+      grenade: [5, 1, 46, 48], underbarrel: [6, 0, 44, 52], medkit: [7, 1, 42, 49],
     };
     const [bx, by, bw, bh] = bounds[kind];
     const scale = Math.min(bw / frame.rect.width, bh / frame.rect.height);
-    const w = frame.rect.width * scale, h = frame.rect.height * scale;
+    const w = kind === 'barrel' || kind === 'stock' ? bw : frame.rect.width * scale, h = frame.rect.height * scale;
     p.sprite(frame, X(bx + (bw - w) / 2), Y(by + (bh - h) / 2), w * s, h * s);
     return;
   }
@@ -151,43 +204,19 @@ export function shopItemArt(p: Painter, kind: Kind, level: number, x: number, y:
     const cells = kind === 'barrel' ? 3 : kind === 'stock' ? 2 : 1, cell = Math.min(h, w / cells);
     itemArt(p, kind, x + (w - cell * cells) / 2, y + (h - cell) / 2, cell, level); return;
   }
-  const angle = 32, radians = angle * Math.PI / 180;
+  const angle = kind === 'barrel' || kind === 'stock' ? 45 : -45, radians = Math.PI / 4;
   const rw = frame.rect.width, rh = frame.rect.height;
   const scale = Math.min(w / (rw * Math.cos(radians) + rh * Math.sin(radians)), h / (rw * Math.sin(radians) + rh * Math.cos(radians)));
   const width = rw * scale, height = rh * scale;
   p.sprite(frame, x + (w - width) / 2, y + (h - height) / 2, width, height, angle);
 }
 
-/** Paper-tape overlays pressed across each socket. Sizes stay strap-like, not stretched slabs. */
-const TAPE_BOX: Record<TapeKind, number[]> = { h: [74, 18], v: [18, 46], x: [38, 30], l: [40, 42], double: [50, 44], wrap: [34, 32] };
-const TAPE_JOINT: Partial<Record<Kind, [TapeKind, number, number, number, number]>> = {
-  grip: ['wrap', 26, 32, 26, 8], stock: ['h', 8, 26, 104, 24], scope: ['x', 28, 18, 28, 49],
-  magazine: ['l', 82, 32, 28, 16], underbarrel: ['v', 140, 32, 28, 16],
-};
-export function assemblyArt(p: Painter, inventory: Inventory, items: Item[], x: number, y: number, cell: number) {
-  const scale = cell / 56;
-  const point = (item: Item, dx: number, dy: number) => item.place.area === 'board'
-    ? [x + item.place.x * cell + dx * scale, y + item.place.y * cell + dy * scale] : [x, y];
-  const joints: { kind: TapeKind; x: number; y: number; fallback: number[][] }[] = [];
-  for (const barrel of items.filter(i => i.kind === 'barrel')) for (const part of items) {
-    if (barrel.id === part.id || !inventory.linked(barrel, part)) continue;
-    if (part.kind === 'barrel') {
-      if (barrel.place.area === 'board' && part.place.area === 'board' && barrel.place.y < part.place.y) {
-        const topL = point(barrel, 26, 32), botL = point(part, 26, 20), topR = point(barrel, 128, 32);
-        joints.push({ kind: 'double', x: (topL[0] + topR[0]) / 2, y: (topL[1] + botL[1]) / 2, fallback: [topL, botL] });
-      }
-    } else {
-      const socket = TAPE_JOINT[part.kind];
-      if (!socket) continue;
-      const [kind, ax, ay, bx, by] = socket, a = point(barrel, ax, ay), b = point(part, bx, by);
-      joints.push({ kind, x: (a[0] + b[0]) / 2, y: (a[1] + b[1]) / 2, fallback: [a, b] });
-    }
-  }
-  for (const item of items) if (item.place.area === 'board') itemArt(p, item.kind, x + item.place.x * cell, y + item.place.y * cell, cell, item.level);
-  for (const joint of joints) {
-    const frame = ItemSprites.tape(joint.kind), [bw, bh] = TAPE_BOX[joint.kind], w = bw * scale, h = bh * scale;
-    if (!frame) { p.line(joint.fallback, C.ink, 9 * scale); p.line(joint.fallback, '#cbb98a', 5 * scale); continue; }
-    p.sprite(frame, joint.x - w / 2, joint.y - h / 2, w, h, 0, true, 220);
+/** Tape is baked into the object PNG. Mounting cuffs overlap the neighboring body. */
+export function assemblyArt(p: Painter, _inventory: Inventory, items: Item[], x: number, y: number, cell: number, pulse?: { id: number; bump: number }) {
+  const ordered = [...items].sort((a, b) => Number(a.kind !== 'barrel') - Number(b.kind !== 'barrel'));
+  for (const item of ordered) if (item.place.area === 'board') {
+    const bump = pulse?.id === item.id ? pulse.bump : 0;
+    itemArt(p, item.kind, x + item.place.x * cell - DEFS[item.kind].w * cell * bump / 2, y + item.place.y * cell - cell * bump / 2, cell * (1 + bump), item.level, true);
   }
 }
 

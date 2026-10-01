@@ -18,6 +18,7 @@ async function attach(p){
   await p.waitForFunction(()=>!!testCC.director.getScene()?.getChildByName('Canvas')?.getComponent('ClassroomGame'));
   await p.evaluate(()=>{globalThis.testGame=testCC.director.getScene().getChildByName('Canvas').getComponent('ClassroomGame');});
   await p.waitForFunction(()=>testGame.spritesReady,{},{timeout:20000});
+  await p.waitForFunction(()=>testGame.uiReady&&testGame.clips.has('assemble')&&testGame.clips.has('merge'),{},{timeout:20000});
 }
 const screenshot=name=>page.screenshot({path:root+'/test-results/'+name+'.png'});
 const state=()=>page.evaluate(()=>({phase:testGame.phase,coins:testGame.coins,stats:testGame.inventory.stats(),items:testGame.inventory.items,modal:testGame.modal,wave:testGame.wave}));
@@ -30,31 +31,46 @@ try {
   track(page);await page.goto('http://localhost:7459');await attach(page);await page.waitForTimeout(500);
   await screenshot('prepare');
   if(process.argv.includes('--sprites')) {
-    const initial=await page.evaluate(()=>testGame.back.node.children.filter(n=>n.active&&n.getComponent(testCC.Sprite)).map(n=>({name:n.getComponent(testCC.Sprite).spriteFrame.name,angle:n.angle})));
-    assert.equal(initial.filter(s=>s.angle===32).length,3,'three diagonal shop icons');
+    const initial=await page.evaluate(()=>testGame.back.node.getComponentsInChildren(testCC.Sprite).filter(s=>s.node.activeInHierarchy&&!s.spriteFrame.name.startsWith('ui-')).map(s=>({name:s.spriteFrame.name,angle:s.node.angle})));
+    assert.equal(initial.filter(s=>Math.abs(s.angle)===45).length,3,'three 45 degree shop icons');
     assert.ok(initial.some(s=>s.name==='barrel-1'&&s.angle===0),'backpack barrel is side-on');
     const names=new Set();
-    for(const kind of ['barrel','stock','scope','magazine','grip','grenade','underbarrel','medkit']) {
+    for(const kind of ['barrel','stock','scope','magazine','grenade','underbarrel','medkit']) {
       const rendered=await page.evaluate(kind=>{
         testGame.newRun();
-        if(kind==='grip')testGame.inventory.get(1).level=5;
-        else for(let level=1;level<=5;level++)testGame.inventory.add(kind,{area:'stash',slot:level-1},level);
-        testGame.offers=[1,3,5].map(level=>({kind,level,price:15,sold:false}));testGame.render();
-        return testGame.back.node.children.filter(n=>n.active&&n.getComponent(testCC.Sprite)).map(n=>({name:n.getComponent(testCC.Sprite).spriteFrame.name,angle:n.angle}));
+        for(let level=1;level<=6;level++)testGame.inventory.add(kind,{area:'stash',slot:level-1},level);
+        const stars=[],drawStar=testGame.back.star;
+        testGame.back.star=function(x,y,...args){stars.push({x,y});return drawStar.call(this,x,y,...args);};
+        testGame.offers=[1,2,6].map(level=>({kind,level,price:15,sold:false}));testGame.render();testGame.back.star=drawStar;
+        return {stars,frames:testGame.back.node.getComponentsInChildren(testCC.Sprite).filter(s=>s.node.activeInHierarchy&&!s.spriteFrame.name.startsWith('ui-')).map(s=>({name:s.spriteFrame.name,angle:s.node.angle}))};
       },kind);
-      rendered.forEach(s=>names.add(s.name));
-      if(kind!=='grip')for(let level=1;level<=5;level++)assert.ok(rendered.some(s=>s.name===`${kind}-${level}`&&s.angle===0));
+      rendered.frames.forEach(s=>names.add(s.name));
+      for(let level=1;level<=6;level++)assert.ok(rendered.frames.some(s=>s.name===`${kind}-${level}`&&Math.abs(s.angle)===45));
+      assert.equal(rendered.stars.length,21,'base is unstarred; six stash tiers and shop tiers show correct stars');
+      assert.ok(rendered.stars.every(s=>s.y>=653),'backpack has no star badges');
+      assert.equal(rendered.stars.filter(s=>s.y===854).length,6,'shop stars sit below icons');
       await screenshot('sprites-'+kind);
     }
-    for(const level of [2,4]) {
-      const name=await page.evaluate(level=>{testGame.inventory.get(1).level=level;testGame.render();return testGame.back.node.children.find(n=>n.active&&n.getComponent(testCC.Sprite)?.spriteFrame.name===`grip-${level}`)?.getComponent(testCC.Sprite).spriteFrame.name;},level);
-      names.add(name);
-    }
-    assert.equal(names.size,40,'all 40 tier frames render');
-    const count=await page.evaluate(()=>{const before=testGame.back.node.children.length;for(let i=0;i<200;i++)testGame.render();return [before,testGame.back.node.children.length];});
+    assert.equal(names.size,43,'42 upgradable frames plus one fixed grip render');
+    const count=await page.evaluate(()=>{const count=()=>testGame.back.node.getComponentsInChildren(testCC.Sprite).length+testGame.back.node.getComponentsInChildren(testCC.Graphics).length;const before=count();for(let i=0;i<200;i++)testGame.render();return [before,count()];});
     assert.equal(count[0],count[1],'rendering reuses sprite nodes');
     await page.evaluate(()=>testGame.newRun());
-    console.log('SPRITES PASSED: 40 frames, diagonal shop, side-on bag/stash, bounded node pool.');
+    console.log('SPRITES PASSED: 43 frames, 45 degree shop/stash, side-on bag, base-to-five stars, bounded node pool.');
+  }
+  if(process.argv.includes('--skins')) {
+    const controls=await page.evaluate(()=>testGame.back.node.getComponentsInChildren(testCC.Sprite).filter(s=>s.node.activeInHierarchy&&s.spriteFrame.name.startsWith('ui-')).map(s=>s.spriteFrame.name));
+    for(const key of ['panel-notebook','panel-chalk','grid-neutral','slot-empty','card-shop','button-primary','button-secondary','pause','refresh','coin'])assert.ok(controls.includes(`ui-${key}`),key);
+    assert.equal(controls.filter(k=>k==='ui-grid-neutral').length,30,'all board cells use the PNG UI');
+    assert.equal(controls.filter(k=>k==='ui-slot-empty').length,10,'all stash tiles use the PNG UI');
+    const audio=await page.evaluate(()=>{
+      const source=testGame.soundSource,original=source.playOneShot,calls=[];
+      source.playOneShot=clip=>calls.push(clip.name);testGame.sound=true;
+      testGame.placementPulse(testGame.inventory.get(2));testGame.placementPulse(testGame.inventory.get(2),true);
+      testGame.sound=false;testGame.placementPulse(testGame.inventory.get(2));
+      source.playOneShot=original;testGame.sound=true;testGame.placementEffect=null;testGame.render();return calls;
+    });
+    assert.deepEqual(audio,['assemble','merge'],'attachment and merge use distinct sounds; mute suppresses both');
+    console.log('SKINS PASSED: PNG panels, cells, slots, buttons and icons; assembly/merge sounds and mute.');
   }
   if(process.argv.includes('--journey')) {
     await drag(110,827,385,594);assert.equal((await state()).coins,70,'invalid purchase is free');
@@ -96,6 +112,10 @@ try {
     // Fixture shows all physical sockets without depending on random shop refreshes.
     await page.evaluate(()=>{const i=testGame.inventory;i.add('magazine',{area:'board',x:3,y:3});i.add('underbarrel',{area:'board',x:4,y:3});i.add('barrel',{area:'board',x:2,y:1});i.add('scope',{area:'board',x:2,y:0});testGame.render();});
     await screenshot('assembled');
+    await page.evaluate(()=>{testGame.placementPulse(testGame.inventory.items.find(i=>i.kind==='scope'));testGame.render();});
+    await page.waitForTimeout(120);await screenshot('assembly-smoke');
+    assert.ok(await page.evaluate(()=>!!testGame.placementEffect));
+    await page.waitForTimeout(650);assert.equal(await page.evaluate(()=>testGame.placementEffect),null);
     await page.mouse.click(321,925);assert.equal((await state()).phase,'battle');
     await page.keyboard.press('Space');assert.equal((await state()).modal,'pause');
     const elapsed=await page.evaluate(()=>testGame.battle.elapsed);await page.waitForTimeout(250);assert.equal(await page.evaluate(()=>testGame.battle.elapsed),elapsed);
